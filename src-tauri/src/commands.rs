@@ -4,7 +4,8 @@ use std::path::Path;
 use base64::Engine;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::picture::{MimeType, Picture, PictureType};
-use lofty::tag::{Accessor, ItemKey, Tag, TagExt, TagType};
+use lofty::config::WriteOptions;
+use lofty::tag::{Accessor, ItemKey, Tag, TagExt};
 use symphonia::core::audio::{AudioBufferRef, SampleBuffer, Signal};
 use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::errors::Error as SymphoniaError;
@@ -49,7 +50,7 @@ pub async fn load_audio_metadata(path: String) -> Result<MetadataDto, String> {
         lyrics: tag.get_string(&ItemKey::Lyrics).map(|s| s.to_string()),
         copyright: tag.get_string(&ItemKey::CopyrightMessage).map(|s| s.to_string()),
         publisher: tag.get_string(&ItemKey::Publisher).map(|s| s.to_string()),
-        encoder: tag.get_string(&ItemKey::Encoder).map(|s| s.to_string()),
+        encoder: tag.get_string(&ItemKey::EncodedBy).map(|s| s.to_string()),
         cover_art_base64: None,
         cover_art_mime: None,
     };
@@ -110,7 +111,7 @@ pub async fn save_audio_metadata(path: String, metadata: MetadataDto) -> Result<
     if let Some(lyrics) = metadata.lyrics { tag.insert_text(ItemKey::Lyrics, lyrics); }
     if let Some(copyright) = metadata.copyright { tag.insert_text(ItemKey::CopyrightMessage, copyright); }
     if let Some(publisher) = metadata.publisher { tag.insert_text(ItemKey::Publisher, publisher); }
-    if let Some(encoder) = metadata.encoder { tag.insert_text(ItemKey::Encoder, encoder); }
+    if let Some(encoder) = metadata.encoder { tag.insert_text(ItemKey::EncodedBy, encoder); }
 
     // Cover Artwork
     if let Some(base64_data) = metadata.cover_art_base64 {
@@ -129,7 +130,7 @@ pub async fn save_audio_metadata(path: String, metadata: MetadataDto) -> Result<
         }
     }
 
-    tagged_file.save_to_path(file_path)
+    tagged_file.save_to_path(file_path, WriteOptions::default())
         .map_err(|e| format!("Failed to write metadata tags: {}", e))?;
 
     Ok(())
@@ -386,7 +387,7 @@ fn save_audio_metadata_internal(path: &str, metadata: &MetadataDto) -> Result<()
         if let Some(ref comp) = metadata.composer { tag.insert_text(ItemKey::Composer, comp.clone()); }
         if let Some(ref isrc) = metadata.isrc { tag.insert_text(ItemKey::Isrc, isrc.clone()); }
 
-        let _ = tagged_file.save_to_path(file_path);
+        let _ = tagged_file.save_to_path(file_path, WriteOptions::default());
     }
     Ok(())
 }

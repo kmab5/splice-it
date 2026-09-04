@@ -60,7 +60,7 @@ impl BiquadFilter {
         self.b1 = (-2.0 * a * ((a - 1.0) + (a + 1.0) * cos_w0)) / a0;
         self.b2 = (a * ((a + 1.0) + (a - 1.0) * cos_w0 - two_sqrt_a_alpha)) / a0;
         self.a1 = (2.0 * ((a - 1.0) - (a + 1.0) * cos_w0)) / a0;
-        self.a2 = ((a + 1.0) - (a - 1.0) * cos_w0 - two_sqrt_a_alpha)) / a0;
+        self.a2 = ((a + 1.0) - (a - 1.0) * cos_w0 - two_sqrt_a_alpha) / a0;
     }
 
     #[inline(always)]
