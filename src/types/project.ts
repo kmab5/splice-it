@@ -195,6 +195,8 @@ export interface ConcatState {
   metadata: MetadataDto;
   /** Off by default: joining files should not silently re-master them. */
   apply_master_chain: boolean;
+  /** Level each file individually so a compilation does not jump in volume. */
+  match_item_loudness?: boolean;
 }
 
 /** Mirrors the Rust `ConcatRequest`. */
@@ -204,6 +206,7 @@ export interface ConcatRequest {
   items: ConcatItem[];
   metadata: MetadataDto;
   apply_master_chain: boolean;
+  match_item_loudness: boolean;
   master_dsp: MasterDspSettings;
 }
 
@@ -219,6 +222,10 @@ export interface AppSettings {
   confirmOnDiscard: boolean;
   /** Default sample rate offered for new concat lists. */
   defaultSampleRate: number;
+  /** Reopen the most recent project when the app starts. */
+  reopenLastProject: boolean;
+  /** Most recently saved or opened project paths, newest first. */
+  recentProjects: string[];
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -226,4 +233,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   autoSaveMinutes: 5,
   confirmOnDiscard: true,
   defaultSampleRate: 44100,
+  reopenLastProject: true,
+  recentProjects: [],
 };
+
+/** How many entries the recent-projects list keeps. */
+export const MAX_RECENT_PROJECTS = 8;

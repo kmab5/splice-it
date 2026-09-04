@@ -41,6 +41,11 @@ interface ConcatWorkspaceProps {
   onOpenExport: () => void;
   dockHeight: number;
   onDockHeightChange: (h: number) => void;
+  /** Path of the file currently previewing, if any. */
+  previewPath?: string | null;
+  onTogglePreview?: (path: string) => void;
+  /** Paths whose waveform is still being computed in the background. */
+  analyzingPaths?: string[];
 }
 
 const formatDuration = (ms: number): string => {
@@ -95,6 +100,9 @@ export const ConcatWorkspace: React.FC<ConcatWorkspaceProps> = ({
   onOpenExport,
   dockHeight,
   onDockHeightChange,
+  previewPath = null,
+  onTogglePreview,
+  analyzingPaths = [],
 }) => {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -582,6 +590,33 @@ export const ConcatWorkspace: React.FC<ConcatWorkspaceProps> = ({
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
+                              onTogglePreview?.(item.source_path);
+                            }}
+                            disabled={analyzingPaths.includes(item.source_path)}
+                            title={
+                              analyzingPaths.includes(item.source_path)
+                                ? 'Still loading'
+                                : previewPath === item.source_path
+                                ? 'Stop preview'
+                                : 'Preview this file'
+                            }
+                            className={`p-1 rounded transition disabled:opacity-30 ${
+                              previewPath === item.source_path
+                                ? 'text-cyan-300 bg-cyan-500/20'
+                                : 'text-slate-500 hover:text-cyan-300'
+                            }`}
+                          >
+                            {analyzingPaths.includes(item.source_path) ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : previewPath === item.source_path ? (
+                              <Square className="w-3.5 h-3.5 fill-current" />
+                            ) : (
+                              <Play className="w-3.5 h-3.5 fill-current" />
+                            )}
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
                               moveItem(index, index - 1);
                             }}
                             disabled={index === 0}
@@ -706,7 +741,25 @@ export const ConcatWorkspace: React.FC<ConcatWorkspaceProps> = ({
               </div>
             </div>
 
-            <div className="pt-1">
+            <div className="pt-1 space-y-2.5">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={state.match_item_loudness ?? false}
+                  onChange={(e) =>
+                    onChange((prev) => ({ ...prev, match_item_loudness: e.target.checked }))
+                  }
+                  className="mt-0.5 rounded border-slate-700 accent-cyan-500"
+                />
+                <span className="text-[11px] text-slate-300 leading-snug">
+                  Match loudness across files
+                  <span className="block text-[10px] text-slate-500 mt-0.5">
+                    Measures each file and nudges it toward the median of the set, so a
+                    compilation does not jump in volume. Capped at 12 dB either way.
+                  </span>
+                </span>
+              </label>
+
               <label className="flex items-start gap-2 cursor-pointer">
                 <input
                   type="checkbox"

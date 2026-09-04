@@ -238,6 +238,10 @@ pub struct ConcatRequest {
     pub metadata: MetadataDto,
     /// Off by default. Joining files should not silently re-master them.
     pub apply_master_chain: bool,
+    /// Level each file individually so a compilation does not jump between
+    /// tracks. Independent of the master chain.
+    #[serde(default)]
+    pub match_item_loudness: bool,
     #[serde(default)]
     pub master_dsp: MasterDspSettings,
 }

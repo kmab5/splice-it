@@ -65,6 +65,10 @@ interface RightSidebarProps {
   /** Opens the native picker. Resolves false when there is no desktop shell. */
   onImportRequest?: () => Promise<boolean>;
   isImporting?: boolean;
+  /** How many sources are still having their waveform built. */
+  analyzingCount?: number;
+  recentProjects?: string[];
+  onOpenRecent?: (path: string) => void;
   onInsertFromPool: (source: SourceAudioFile, trackIndex?: number) => void;
   onDeleteFromPool: (sourceId: string) => void;
   auditioningId: string | null;
@@ -99,6 +103,9 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   onImportToPool,
   onImportRequest,
   isImporting = false,
+  analyzingCount = 0,
+  recentProjects = [],
+  onOpenRecent,
   onInsertFromPool,
   onDeleteFromPool,
   auditioningId,
@@ -423,6 +430,31 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
               </button>
             </div>
 
+            {/* Recent projects */}
+            {recentProjects.length > 0 && (
+              <div className="space-y-1 pt-1">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                  <Clock className="w-3 h-3 text-slate-500" />
+                  Recent
+                </span>
+                <div className="space-y-0.5">
+                  {recentProjects.slice(0, 5).map((path) => {
+                    const fileName = path.split(/[\\/]/).pop() || path;
+                    return (
+                      <button
+                        key={path}
+                        onClick={() => onOpenRecent?.(path)}
+                        title={path}
+                        className="w-full text-left px-2 py-1 rounded text-[11px] text-slate-400 hover:text-slate-100 hover:bg-slate-800/70 truncate transition"
+                      >
+                        {fileName.replace(/\.sic$/i, '')}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* 2. Timeline Grid & Snap Tools */}
             <div className="space-y-2 pt-2 border-t border-slate-800">
               <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
@@ -604,6 +636,16 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                   : 'WAV, MP3, FLAC, OGG, AAC or click to browse'}
               </div>
             </div>
+
+            {analyzingCount > 0 && (
+              <div className="flex items-center gap-2 text-[11px] text-cyan-300 bg-cyan-950/30 border border-cyan-800/50 rounded-lg px-2.5 py-1.5">
+                <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                <span>
+                  Building waveform{analyzingCount === 1 ? '' : 's'} for {analyzingCount} file
+                  {analyzingCount === 1 ? '' : 's'} — you can keep working.
+                </span>
+              </div>
+            )}
 
             {/* Source Audio List */}
             <div className="space-y-2">

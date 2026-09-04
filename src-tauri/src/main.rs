@@ -8,7 +8,7 @@ mod models;
 
 use commands::{
     analyze_audio_file, export_concat, export_project, generate_waveform_peaks, load_audio_metadata,
-    read_audio_file_bytes, read_text_file, save_audio_metadata, write_text_file,
+    probe_audio_file, read_audio_file_bytes, read_text_file, save_audio_metadata, write_text_file,
 };
 
 fn main() {
@@ -20,6 +20,7 @@ fn main() {
             load_audio_metadata,
             save_audio_metadata,
             analyze_audio_file,
+            probe_audio_file,
             generate_waveform_peaks,
             read_audio_file_bytes,
             read_text_file,

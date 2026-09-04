@@ -115,6 +115,14 @@ export async function analyzeAudioFile(
   return invokeCmd<AudioFileInfo>('analyze_audio_file', { path, samplesPerPeak });
 }
 
+/**
+ * Read a file's properties without decoding it. Fast enough to run on the
+ * import path; `analyzeAudioFile` fills in the peak envelope afterwards.
+ */
+export async function probeAudioFile(path: string): Promise<AudioFileInfo> {
+  return invokeCmd<AudioFileInfo>('probe_audio_file', { path });
+}
+
 /** Raw bytes of a source file, for decoding with Web Audio for preview playback. */
 export async function readAudioFileBytes(path: string): Promise<ArrayBuffer> {
   const result = await invokeCmd<ArrayBuffer | number[]>('read_audio_file_bytes', { path });

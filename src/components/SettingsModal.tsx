@@ -11,6 +11,7 @@ interface SettingsModalProps {
   /** Where the current project is saved, if anywhere. */
   savedPath: string | null;
   lastAutoSaveAt: number | null;
+  onClearRecent: () => void;
 }
 
 const AUTO_SAVE_INTERVALS = [1, 2, 5, 10, 15, 30];
@@ -22,6 +23,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   savedPath,
   lastAutoSaveAt,
+  onClearRecent,
 }) => {
   if (!isOpen) return null;
 
@@ -143,6 +145,40 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 />
               </button>
             </label>
+
+            <label className="flex items-center justify-between cursor-pointer bg-slate-950/70 border border-slate-800 rounded-lg px-3 py-2.5">
+              <span className="text-slate-200">Reopen last project on launch</span>
+              <button
+                type="button"
+                onClick={() => onChange({ reopenLastProject: !settings.reopenLastProject })}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                  settings.reopenLastProject ? 'bg-cyan-500' : 'bg-slate-700'
+                }`}
+              >
+                <span
+                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                    settings.reopenLastProject ? 'translate-x-4' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </label>
+
+            <div className="flex items-center justify-between bg-slate-950/70 border border-slate-800 rounded-lg px-3 py-2.5">
+              <span className="text-slate-200">
+                Recent projects
+                <span className="text-slate-500 font-mono ml-1.5">
+                  ({settings.recentProjects.length})
+                </span>
+              </span>
+              <button
+                type="button"
+                onClick={onClearRecent}
+                disabled={settings.recentProjects.length === 0}
+                className="px-2 py-1 rounded text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-300 transition disabled:opacity-30"
+              >
+                Clear
+              </button>
+            </div>
 
             <div className="flex items-center justify-between bg-slate-950/70 border border-slate-800 rounded-lg px-3 py-2.5">
               <span className="text-slate-200">Default sample rate</span>

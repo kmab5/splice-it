@@ -10,10 +10,12 @@ import {
   ConcatState,
   ExportOptions,
   AppSettings,
+  MAX_RECENT_PROJECTS,
 } from './types/project';
 import { audioEngine } from './services/audioEngine';
 import {
   analyzeAudioFile,
+  probeAudioFile,
   BROWSER_PATH_PREFIX,
   exportConcat,
   exportProject,
@@ -182,6 +184,19 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [lastAutoSaveAt, setLastAutoSaveAt] = useState<number | null>(null);
+
+  /** Push a path to the front of the recent list, de-duplicated and capped. */
+  const rememberRecentProject = useCallback((path: string) => {
+    setSettings((prev) => {
+      const recent = [path, ...prev.recentProjects.filter((p) => p !== path)].slice(
+        0,
+        MAX_RECENT_PROJECTS
+      );
+      const next = { ...prev, recentProjects: recent };
+      saveSettings(next);
+      return next;
+    });
+  }, []);
 
   const updateSettings = useCallback((updates: Partial<AppSettings>) => {
     setSettings((prev) => {
@@ -732,6 +747,7 @@ export default function App() {
           const savedProject: ProjectState = { ...project, name: baseName };
           setProject(savedProject);
           setSavedPath(path);
+          rememberRecentProject(path);
           markClean(savedProject, concat);
           return true;
         } catch (err) {
@@ -757,7 +773,7 @@ export default function App() {
       markClean(project, concat);
       return true;
     },
-    [buildDocument, project, concat, savedPath, markClean]
+    [buildDocument, project, concat, savedPath, markClean, rememberRecentProject]
   );
 
   /**
@@ -828,11 +844,12 @@ export default function App() {
         const baseName = (path.split(/[\\/]/).pop() || 'Untitled').replace(/\.sic$/i, '');
         applyLoadedProject({ ...loaded, name: loaded.name || baseName });
         setSavedPath(path);
+        rememberRecentProject(path);
       } catch {
         window.alert('Failed to open project: invalid or unreadable .sic file.');
       }
     },
-    [applyLoadedProject]
+    [applyLoadedProject, rememberRecentProject]
   );
 
   const handleOpenProject = useCallback(
@@ -867,6 +884,46 @@ export default function App() {
    * decode its bytes for Web Audio preview playback. The absolute path becomes
    * the identity of the source everywhere else in the app.
    */
+  /** Paths whose peak envelope is still being computed in the background. */
+  const [analyzingPaths, setAnalyzingPaths] = useState<string[]>([]);
+
+  /**
+   * Fill in the peak envelope and decode the audio for playback, one file at a
+   * time, without blocking the import.
+   */
+  const analyzeInBackground = useCallback(async (paths: string[]) => {
+    setAnalyzingPaths((prev) => [...prev, ...paths]);
+
+    for (const path of paths) {
+      try {
+        if (!audioEngine.hasSource(path)) {
+          const bytes = await readAudioFileBytes(path);
+          await audioEngine.registerSource(path, bytes);
+        }
+
+        const info = await analyzeAudioFile(path);
+        setProject((prev) => ({
+          ...prev,
+          audio_pool: (prev.audio_pool || []).map((s) =>
+            s.path === path
+              ? { ...s, waveform_peaks: info.peaks, duration_ms: info.duration_ms }
+              : s
+          ),
+        }));
+      } catch (err) {
+        console.warn('Background analysis failed for', path, err);
+      } finally {
+        setAnalyzingPaths((prev) => prev.filter((p) => p !== path));
+      }
+    }
+  }, []);
+
+  /**
+   * Import is now two phases. The container is probed for duration and stream
+   * properties, which is near-instant, and the file appears in the pool right
+   * away. Decoding for playback and building the waveform happens afterwards in
+   * the background, so importing a batch no longer looks like a freeze.
+   */
   const addSourcesByPath = useCallback(
     async (paths: string[]) => {
       if (paths.length === 0) return;
@@ -880,9 +937,7 @@ export default function App() {
       for (const path of paths) {
         if (existing.has(path)) continue;
         try {
-          const info = await analyzeAudioFile(path);
-          const bytes = await readAudioFileBytes(path);
-          await audioEngine.registerSource(path, bytes);
+          const info = await probeAudioFile(path);
 
           if (!firstTags && info.metadata && info.metadata.title) {
             firstTags = info.metadata;
@@ -897,12 +952,13 @@ export default function App() {
             sample_rate: info.sample_rate,
             channels: info.channels,
             size_bytes: info.size_bytes,
-            waveform_peaks: info.peaks,
             date_added: new Date().toISOString().split('T')[0],
           });
           existing.add(path);
         } catch (err) {
-          failed.push(`${path.split(/[\\/]/).pop()}: ${err instanceof Error ? err.message : String(err)}`);
+          failed.push(
+            `${path.split(/[\\/]/).pop()}: ${err instanceof Error ? err.message : String(err)}`
+          );
         }
       }
 
@@ -931,13 +987,13 @@ export default function App() {
             ...prev,
             audio_pool: [...added, ...(prev.audio_pool || [])],
           };
-          // Seed the tag editor from the first tagged file imported into an
-          // otherwise untouched project, so exports start from real metadata.
           if (isFirstImport && firstTags && !prev.metadata.title) {
             next.metadata = { ...firstTags, ...prev.metadata };
           }
           return next;
         });
+
+        void analyzeInBackground(added.map((s) => s.path));
       }
 
       setIsImporting(false);
@@ -945,7 +1001,7 @@ export default function App() {
         window.alert(`Could not import:\n\n${failed.join('\n')}`);
       }
     },
-    [project.audio_pool]
+    [project.audio_pool, analyzeInBackground]
   );
 
   /** Opens the native picker. Returns false in the browser so the caller can
@@ -1027,6 +1083,25 @@ export default function App() {
       setAuditioningId(null);
     }
   };
+
+  /** Preview a single file by path. Used by the concat list. */
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
+
+  const handleTogglePreview = useCallback((path: string) => {
+    if (previewPath === path) {
+      audioEngine.stopAudition();
+      setPreviewPath(null);
+      return;
+    }
+    const started = audioEngine.startAudition(path, () => {
+      setPreviewPath((cur) => (cur === path ? null : cur));
+    });
+    if (started) {
+      setPreviewPath(path);
+    } else {
+      window.alert('That file is still loading. Give it a moment and try again.');
+    }
+  }, [previewPath]);
 
   const handleToggleAudition = (source: SourceAudioFile) => {
     if (auditioningId === source.id) {
@@ -1124,6 +1199,7 @@ export default function App() {
           items: concat.items,
           metadata: concat.metadata,
           apply_master_chain: concat.apply_master_chain,
+          match_item_loudness: concat.match_item_loudness ?? false,
           master_dsp: project.master_dsp,
         },
         options
@@ -1141,6 +1217,33 @@ export default function App() {
     },
     []
   );
+
+  // Reopen the most recent project on launch, when enabled. A missing file is
+  // dropped from the list rather than reported: it usually means the project
+  // was moved or deleted between sessions.
+  const hasAttemptedReopenRef = useRef(false);
+  useEffect(() => {
+    if (hasAttemptedReopenRef.current) return;
+    hasAttemptedReopenRef.current = true;
+
+    if (!isTauri() || !settings.reopenLastProject) return;
+    const mostRecent = settings.recentProjects[0];
+    if (!mostRecent) return;
+
+    void (async () => {
+      try {
+        const text = await readTextFile(mostRecent);
+        applyLoadedProject(JSON.parse(text) as ProjectState);
+        setSavedPath(mostRecent);
+      } catch {
+        updateSettings({
+          recentProjects: settings.recentProjects.filter((p) => p !== mostRecent),
+        });
+      }
+    })();
+    // Runs once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ---------------------------------------------------------------------------
   // Auto-save
@@ -1450,6 +1553,9 @@ export default function App() {
           }}
           onSeek={handleConcatSeek}
           onOpenExport={() => setIsConcatExportOpen(true)}
+          previewPath={previewPath}
+          onTogglePreview={handleTogglePreview}
+          analyzingPaths={analyzingPaths}
           dockHeight={concatDockHeight}
           onDockHeightChange={setConcatDockHeight}
         />
@@ -1702,6 +1808,9 @@ export default function App() {
           onImportToPool={handleImportToPool}
           onImportRequest={handleImportRequest}
           isImporting={isImporting}
+          analyzingCount={analyzingPaths.length}
+          recentProjects={settings.recentProjects}
+          onOpenRecent={(path) => void handleOpenProjectPath(path)}
           onInsertFromPool={handleInsertFromPool}
           onDeleteFromPool={handleDeleteFromPool}
           auditioningId={auditioningId}
@@ -1790,6 +1899,7 @@ export default function App() {
         onClose={() => setIsSettingsOpen(false)}
         savedPath={savedPath}
         lastAutoSaveAt={lastAutoSaveAt}
+        onClearRecent={() => updateSettings({ recentProjects: [] })}
       />
 
       {/* 6. Native OS file drop overlay */}
