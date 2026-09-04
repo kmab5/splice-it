@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core permissions for the Splice It main window. Native open/save dialogs are required for importing source audio and choosing an export destination. All file reading and writing is performed by the app's own Rust commands, so the fs plugin scope is intentionally not granted.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default"
+  ]
+}

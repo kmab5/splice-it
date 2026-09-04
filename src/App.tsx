@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   ProjectState,
   ClipState,
@@ -8,6 +8,17 @@ import {
   SourceAudioFile,
 } from './types/project';
 import { audioEngine } from './services/audioEngine';
+import {
+  analyzeAudioFile,
+  BROWSER_PATH_PREFIX,
+  isTauri,
+  pickAudioFiles,
+  pickProjectFile,
+  pickSavePath,
+  readAudioFileBytes,
+  readTextFile,
+  writeTextFile,
+} from './services/ipc';
 import { TopNavbar } from './components/TopNavbar';
 import { TimelineRuler } from './components/TimelineRuler';
 import { TrackHeader } from './components/TrackHeader';
@@ -20,176 +31,24 @@ import { getNonOverlappingStartTime } from './utils/clipCollisions';
 import { getRandomTrackColor } from './utils/trackColors';
 import { Plus, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 
-const DEMO_AUDIO_POOL: SourceAudioFile[] = [
-  {
-    id: 'src-1',
-    name: 'drums_120bpm.wav',
-    format: 'WAV',
-    duration_ms: 16000,
-    sample_rate: 44100,
-    channels: 2,
-    size_bytes: 2822400,
-    date_added: '2026-09-04',
-  },
-  {
-    id: 'src-2',
-    name: 'sub_bass_loop.wav',
-    format: 'WAV',
-    duration_ms: 12000,
-    sample_rate: 44100,
-    channels: 2,
-    size_bytes: 2116800,
-    date_added: '2026-09-04',
-  },
-  {
-    id: 'src-3',
-    name: 'synth_chords.wav',
-    format: 'WAV',
-    duration_ms: 10000,
-    sample_rate: 44100,
-    channels: 2,
-    size_bytes: 1764000,
-    date_added: '2026-09-04',
-  },
-  {
-    id: 'src-4',
-    name: 'vocal_chant.wav',
-    format: 'WAV',
-    duration_ms: 8000,
-    sample_rate: 44100,
-    channels: 2,
-    size_bytes: 1411200,
-    date_added: '2026-09-04',
-  },
-  {
-    id: 'src-5',
-    name: 'ambient_sweep.wav',
-    format: 'WAV',
-    duration_ms: 6000,
-    sample_rate: 44100,
-    channels: 2,
-    size_bytes: 1058400,
-    date_added: '2026-09-04',
-  },
-];
-
+/**
+ * A new workspace starts empty. The previous build shipped a fake audio pool
+ * and six clips pointing at files that never existed, which made the app look
+ * like it was playing imported audio when it was really playing synthesized
+ * tones. Tracks are provided as empty lanes to drop imported audio onto.
+ */
 const INITIAL_PROJECT: ProjectState = {
   version: '2.0.0',
-  name: 'Neon Skyline (Master)',
+  name: 'Untitled Project',
   sample_rate: 44100,
   bpm: 120,
   tracks: [
-    {
-      id: 'trk-1',
-      name: 'Drums & Groove',
-      muted: false,
-      solo: false,
-      volume: 1.0,
-      pan: 0.0,
-      color: '#10b981', // Emerald
-    },
-    {
-      id: 'trk-2',
-      name: 'Sub 808 Bass',
-      muted: false,
-      solo: false,
-      volume: 0.95,
-      pan: 0.0,
-      color: '#06b6d4', // Cyan
-    },
-    {
-      id: 'trk-3',
-      name: 'Analog Chords',
-      muted: false,
-      solo: false,
-      volume: 0.85,
-      pan: -0.2,
-      color: '#38bdf8', // Sky
-    },
-    {
-      id: 'trk-4',
-      name: 'Vocal Pad & FX',
-      muted: false,
-      solo: false,
-      volume: 0.8,
-      pan: 0.25,
-      color: '#a855f7', // Purple
-    },
+    { id: 'trk-1', name: 'Track 1', muted: false, solo: false, volume: 1.0, pan: 0.0, color: '#10b981' },
+    { id: 'trk-2', name: 'Track 2', muted: false, solo: false, volume: 1.0, pan: 0.0, color: '#06b6d4' },
+    { id: 'trk-3', name: 'Track 3', muted: false, solo: false, volume: 1.0, pan: 0.0, color: '#38bdf8' },
+    { id: 'trk-4', name: 'Track 4', muted: false, solo: false, volume: 1.0, pan: 0.0, color: '#a855f7' },
   ],
-  clips: [
-    {
-      id: 'clip-1',
-      name: 'Drum Groove A',
-      source_path: 'stems/drums_120bpm.wav',
-      track_index: 0,
-      start_time_ms: 0,
-      offset_ms: 0,
-      duration_ms: 8000,
-      gain: 1.0,
-      fade_in_ms: 50,
-      fade_out_ms: 200,
-    },
-    {
-      id: 'clip-2',
-      name: 'Drum Fill & Break',
-      source_path: 'stems/drums_fill.wav',
-      track_index: 0,
-      start_time_ms: 8000,
-      offset_ms: 0,
-      duration_ms: 8000,
-      gain: 1.0,
-      fade_in_ms: 0,
-      fade_out_ms: 350,
-    },
-    {
-      id: 'clip-3',
-      name: '808 Bassline Loop',
-      source_path: 'stems/sub_bass_loop.wav',
-      track_index: 1,
-      start_time_ms: 0,
-      offset_ms: 0,
-      duration_ms: 12000,
-      gain: 1.0,
-      fade_in_ms: 80,
-      fade_out_ms: 400,
-    },
-    {
-      id: 'clip-4',
-      name: 'Neo Chords (Verse)',
-      source_path: 'stems/synth_chords.wav',
-      track_index: 2,
-      start_time_ms: 2000,
-      offset_ms: 0,
-      duration_ms: 10000,
-      gain: 0.9,
-      fade_in_ms: 250,
-      fade_out_ms: 500,
-    },
-    {
-      id: 'clip-5',
-      name: 'Vocal Lead Chant',
-      source_path: 'stems/vocal_chant.wav',
-      track_index: 3,
-      start_time_ms: 4000,
-      offset_ms: 0,
-      duration_ms: 8000,
-      gain: 0.85,
-      fade_in_ms: 400,
-      fade_out_ms: 600,
-    },
-    {
-      id: 'clip-6',
-      name: 'Ambient Filter Sweep',
-      source_path: 'stems/ambient_sweep.wav',
-      track_index: 3,
-      start_time_ms: 12000,
-      offset_ms: 0,
-      duration_ms: 6000,
-      gain: 0.75,
-      fade_in_ms: 300,
-      fade_out_ms: 800,
-    },
-  ],
+  clips: [],
   master_dsp: {
     eq_high_cut_hz: 12000,
     eq_high_cut_gain_db: -2.5,
@@ -206,27 +65,9 @@ const INITIAL_PROJECT: ProjectState = {
     target_lufs: -14.0,
   },
   metadata: {
-    title: 'Neon Skyline (Master)',
-    artist: 'Aether Wave',
-    album: 'Parallel Horizons',
-    year: 2026,
-    track_number: 1,
-    total_tracks: 8,
-    disc_number: 1,
-    genre: 'Synthwave / Cyberpunk',
-    comment: 'Mastered with Splice It DSP Chain (-14 LUFS)',
-    composer: 'Aether Wave',
-    isrc: 'US-SP1-26-00101',
-    bpm: 120,
-    key: 'A minor',
-    lyrics: 'Cruising through the electric night\nCircuits humming in the neon light...',
-    copyright: '© 2026 Splice It Records',
-    publisher: 'Splice It Music Group',
-    encoder: 'Splice It Rust DSP Engine v2.0',
-    cover_art_base64: undefined,
-    cover_art_mime: 'image/jpeg',
+    encoder: 'Splice It',
   },
-  audio_pool: DEMO_AUDIO_POOL,
+  audio_pool: [],
 };
 
 export default function App() {
@@ -235,7 +76,7 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [zoom, setZoom] = useState<number>(65); // px per second
   const [snapToGrid, setSnapToGrid] = useState<boolean>(true);
-  const [selectedClipId, setSelectedClipId] = useState<string | null>('clip-1');
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [selectedTrackIndex, setSelectedTrackIndex] = useState<number | null>(0);
   const [isTrackAreaCollapsed, setIsTrackAreaCollapsed] = useState<boolean>(false);
   const [scrollLeft, setScrollLeft] = useState<number>(0);
@@ -307,7 +148,6 @@ export default function App() {
 
   // Audio Pool Auditioning
   const [auditioningId, setAuditioningId] = useState<string | null>(null);
-  const auditionSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
   const timelineContainerRef = useRef<HTMLDivElement>(null);
 
@@ -346,11 +186,6 @@ export default function App() {
       return { past: newPast, future: newFuture };
     });
   }, [project]);
-
-  // Initialize demo buffers for Web Audio
-  useEffect(() => {
-    audioEngine.createDemoBuffers(project.clips).catch(console.error);
-  }, []);
 
   // Sync master DSP settings with AudioEngine live
   useEffect(() => {
@@ -530,7 +365,6 @@ export default function App() {
       clips: [...prev.clips, ...newClips],
     }));
 
-    audioEngine.createDemoBuffers(newClips).catch(console.error);
   };
 
   const handleDuplicateTrack = (trackIndex: number) => {
@@ -558,7 +392,6 @@ export default function App() {
       clips: [...prev.clips, ...duplicatedClips],
     }));
 
-    audioEngine.createDemoBuffers(duplicatedClips).catch(console.error);
   };
 
   // Clip operations
@@ -605,7 +438,6 @@ export default function App() {
       newClips.splice(clipIndex, 1, leftClip, rightClip);
       setSelectedClipId(rightClip.id);
 
-      audioEngine.createDemoBuffers([leftClip, rightClip]).catch(console.error);
 
       return { ...prev, clips: newClips };
     });
@@ -645,7 +477,6 @@ export default function App() {
 
     setProject((prev) => ({ ...prev, clips: [...prev.clips, newClip] }));
     setSelectedClipId(newClip.id);
-    audioEngine.createDemoBuffers([newClip]).catch(console.error);
   };
 
   // Clip Copy & Paste
@@ -695,7 +526,6 @@ export default function App() {
 
     setProject((prev) => ({ ...prev, clips: [...prev.clips, newClip] }));
     setSelectedClipId(newClip.id);
-    audioEngine.createDemoBuffers([newClip]).catch(console.error);
   };
 
   // DSP & Metadata updates
@@ -727,69 +557,204 @@ export default function App() {
     }
   };
 
-  const handleSaveProject = () => {
-    const jsonStr = JSON.stringify(project, null, 2);
-    const blob = new Blob([jsonStr], { type: 'application/json' });
+  const handleSaveProject = useCallback(async () => {
+    const json = JSON.stringify(project, null, 2);
+    const defaultName = `${project.name.replace(/\s+/g, '_')}.sic`;
+
+    if (isTauri()) {
+      const path = await pickSavePath(defaultName, ['sic'], 'Save Splice It project');
+      if (!path) return;
+      try {
+        await writeTextFile(path, json);
+      } catch (err) {
+        window.alert(`Could not save project: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return;
+    }
+
+    // Browser fallback: download the .sic document.
+    const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${project.name.replace(/\s+/g, '_')}.sic`;
+    a.download = defaultName;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  };
+  }, [project]);
 
-  const handleOpenProject = async (file: File) => {
-    try {
-      const text = await file.text();
-      const parsed = JSON.parse(text) as ProjectState;
-      if (parsed.tracks && parsed.clips) {
-        handleStop();
-        pushHistory(project);
-        setProject(parsed);
-        audioEngine.createDemoBuffers(parsed.clips).catch(console.error);
+  /**
+   * Re-decode every source referenced by a loaded project so playback and
+   * waveforms work immediately. Missing files are reported, not silently faked.
+   */
+  const hydrateSources = useCallback(async (pool: SourceAudioFile[]) => {
+    if (!isTauri()) return;
+    const missing: string[] = [];
+
+    for (const source of pool) {
+      if (!source.path || source.path.startsWith(BROWSER_PATH_PREFIX)) continue;
+      if (audioEngine.hasSource(source.path)) continue;
+      try {
+        const bytes = await readAudioFileBytes(source.path);
+        await audioEngine.registerSource(source.path, bytes);
+      } catch {
+        missing.push(source.name);
       }
-    } catch {
-      alert('Failed to parse project file: Invalid JSON structure.');
     }
-  };
 
-  // Audio Pool Handlers (User Request: "a separate place for audio management (source audio, not clips/tracks on the edit area)")
-  const handleImportToPool = async (file: File) => {
+    if (missing.length > 0) {
+      window.alert(
+        `These source files could not be found and will be silent:\n\n${missing.join('\n')}`
+      );
+    }
+  }, []);
+
+  const applyLoadedProject = useCallback(
+    (parsed: ProjectState) => {
+      if (!parsed.tracks || !parsed.clips) {
+        window.alert('Failed to parse project file: missing tracks or clips.');
+        return;
+      }
+      handleStop();
+      pushHistory(project);
+      setProject(parsed);
+      setSelectedClipId(null);
+      void hydrateSources(parsed.audio_pool || []);
+    },
+    [project, pushHistory, handleStop, hydrateSources]
+  );
+
+  const handleOpenProject = useCallback(
+    async (file?: File) => {
+      try {
+        if (file) {
+          applyLoadedProject(JSON.parse(await file.text()) as ProjectState);
+          return;
+        }
+        const path = await pickProjectFile();
+        if (!path) return;
+        applyLoadedProject(JSON.parse(await readTextFile(path)) as ProjectState);
+      } catch {
+        window.alert('Failed to parse project file: invalid JSON structure.');
+      }
+    },
+    [applyLoadedProject]
+  );
+
+  // ---------------------------------------------------------------------------
+  // Audio Pool: real source files on disk
+  // ---------------------------------------------------------------------------
+
+  const [isImporting, setIsImporting] = useState<boolean>(false);
+
+  /**
+   * Analyze each picked file in Rust (duration, peaks, embedded tags), then
+   * decode its bytes for Web Audio preview playback. The absolute path becomes
+   * the identity of the source everywhere else in the app.
+   */
+  const addSourcesByPath = useCallback(
+    async (paths: string[]) => {
+      if (paths.length === 0) return;
+      setIsImporting(true);
+
+      const added: SourceAudioFile[] = [];
+      const failed: string[] = [];
+      const existing = new Set((project.audio_pool || []).map((s) => s.path));
+      let firstTags: MetadataDto | null = null;
+
+      for (const path of paths) {
+        if (existing.has(path)) continue;
+        try {
+          const info = await analyzeAudioFile(path);
+          const bytes = await readAudioFileBytes(path);
+          await audioEngine.registerSource(path, bytes);
+
+          if (!firstTags && info.metadata && info.metadata.title) {
+            firstTags = info.metadata;
+          }
+
+          added.push({
+            id: `src-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            name: info.name,
+            path: info.path,
+            format: info.format,
+            duration_ms: info.duration_ms,
+            sample_rate: info.sample_rate,
+            channels: info.channels,
+            size_bytes: info.size_bytes,
+            waveform_peaks: info.peaks,
+            date_added: new Date().toISOString().split('T')[0],
+          });
+          existing.add(path);
+        } catch (err) {
+          failed.push(`${path.split(/[\\/]/).pop()}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      if (added.length > 0) {
+        setProject((prev) => {
+          const isFirstImport = (prev.audio_pool || []).length === 0;
+          const next: ProjectState = {
+            ...prev,
+            audio_pool: [...added, ...(prev.audio_pool || [])],
+          };
+          // Seed the tag editor from the first tagged file imported into an
+          // otherwise untouched project, so exports start from real metadata.
+          if (isFirstImport && firstTags && !prev.metadata.title) {
+            next.metadata = { ...firstTags, ...prev.metadata };
+          }
+          return next;
+        });
+      }
+
+      setIsImporting(false);
+      if (failed.length > 0) {
+        window.alert(`Could not import:\n\n${failed.join('\n')}`);
+      }
+    },
+    [project.audio_pool]
+  );
+
+  /** Opens the native picker. Returns false in the browser so the caller can
+   *  fall back to an <input type="file">. */
+  const handleImportRequest = useCallback(async (): Promise<boolean> => {
+    const paths = await pickAudioFiles();
+    if (paths === null) return false;
+    await addSourcesByPath(paths);
+    return true;
+  }, [addSourcesByPath]);
+
+  /** Browser fallback path: decode a File and register it under a synthetic key. */
+  const handleImportToPool = useCallback(async (file: File) => {
+    const key = `${BROWSER_PATH_PREFIX}${file.name}`;
     try {
-      const buffer = await audioEngine.loadAudioFile(file);
-      const ext = file.name.split('.').pop()?.toUpperCase() || 'WAV';
+      const buffer = await audioEngine.registerSourceFromFile(key, file);
       const newSource: SourceAudioFile = {
-        id: `src-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        id: `src-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         name: file.name,
-        format: ext,
+        path: key,
+        format: (file.name.split('.').pop() || 'WAV').toUpperCase(),
         duration_ms: Math.round(buffer.duration * 1000),
         sample_rate: buffer.sampleRate,
         channels: buffer.numberOfChannels,
         size_bytes: file.size,
         date_added: new Date().toISOString().split('T')[0],
       };
-
       setProject((prev) => ({
         ...prev,
-        audio_pool: [newSource, ...(prev.audio_pool || [])],
+        audio_pool: [newSource, ...(prev.audio_pool || []).filter((s) => s.path !== key)],
       }));
     } catch (err) {
-      alert(`Failed to import source audio: ${err}`);
+      window.alert(`Failed to import ${file.name}: ${err}`);
     }
-  };
+  }, []);
 
   const handleInsertFromPool = (source: SourceAudioFile, trackIndex?: number) => {
     pushHistory(project);
     const targetTrack =
-      trackIndex !== undefined
-        ? trackIndex
-        : selectedClip
-        ? selectedClip.track_index
-        : 0;
+      trackIndex !== undefined ? trackIndex : selectedTrackIndex !== null ? selectedTrackIndex : 0;
 
-    // Enforce zero overlap: find nearest non-overlapping slot on target track
     const validStartMs = getNonOverlappingStartTime(
       currentTimeMs,
       source.duration_ms,
@@ -800,86 +765,52 @@ export default function App() {
     const newClip: ClipState = {
       id: `clip-${Date.now()}`,
       name: source.name.replace(/\.[^/.]+$/, ''),
-      source_path: source.name,
-      track_index: Math.min(project.tracks.length - 1, targetTrack),
+      // The real path, so the Rust exporter can open it.
+      source_path: source.path,
+      track_index: Math.min(project.tracks.length - 1, Math.max(0, targetTrack)),
       start_time_ms: validStartMs,
       offset_ms: 0,
       duration_ms: source.duration_ms,
       gain: 1.0,
-      fade_in_ms: 20,
-      fade_out_ms: 100,
+      fade_in_ms: 0,
+      fade_out_ms: 0,
     };
 
-    setProject((prev) => ({
-      ...prev,
-      clips: [...prev.clips, newClip],
-    }));
+    setProject((prev) => ({ ...prev, clips: [...prev.clips, newClip] }));
     setSelectedClipId(newClip.id);
-    audioEngine.createDemoBuffers([newClip]).catch(console.error);
   };
 
   const handleDeleteFromPool = (sourceId: string) => {
+    const source = (project.audio_pool || []).find((s) => s.id === sourceId);
     setProject((prev) => ({
       ...prev,
       audio_pool: (prev.audio_pool || []).filter((s) => s.id !== sourceId),
     }));
+    if (source) {
+      const stillUsed = project.clips.some((c) => c.source_path === source.path);
+      if (!stillUsed) audioEngine.removeSource(source.path);
+    }
     if (auditioningId === sourceId) {
-      if (auditionSourceRef.current) {
-        try {
-          auditionSourceRef.current.stop();
-        } catch {
-          // ignore
-        }
-      }
+      audioEngine.stopAudition();
       setAuditioningId(null);
     }
   };
 
   const handleToggleAudition = (source: SourceAudioFile) => {
     if (auditioningId === source.id) {
-      // Stop audition
-      if (auditionSourceRef.current) {
-        try {
-          auditionSourceRef.current.stop();
-        } catch {
-          // ignore
-        }
-      }
+      audioEngine.stopAudition();
       setAuditioningId(null);
       return;
     }
 
-    // Play audition preview
-    try {
-      const ctx = audioEngine.getAudioContext();
-      if (auditionSourceRef.current) {
-        try {
-          auditionSourceRef.current.stop();
-        } catch {
-          // ignore
-        }
-      }
-      const durSec = Math.max(1, source.duration_ms / 1000);
-      const buffer = ctx.createBuffer(2, Math.floor(ctx.sampleRate * Math.min(8, durSec)), ctx.sampleRate);
-      for (let ch = 0; ch < 2; ch++) {
-        const data = buffer.getChannelData(ch);
-        const freq = 180 + (source.name.length % 5) * 60;
-        for (let i = 0; i < data.length; i++) {
-          const t = i / ctx.sampleRate;
-          data[i] = Math.sin(2 * Math.PI * freq * t) * Math.exp(-t * 0.4) * 0.25;
-        }
-      }
-      const srcNode = ctx.createBufferSource();
-      srcNode.buffer = buffer;
-      srcNode.connect(ctx.destination);
-      srcNode.onended = () => {
-        setAuditioningId((cur) => (cur === source.id ? null : cur));
-      };
-      srcNode.start();
-      auditionSourceRef.current = srcNode;
+    const started = audioEngine.startAudition(source.path, () => {
+      setAuditioningId((cur) => (cur === source.id ? null : cur));
+    });
+
+    if (started) {
       setAuditioningId(source.id);
-    } catch {
-      setAuditioningId(null);
+    } else {
+      window.alert(`${source.name} is not loaded. Re-import it to audition.`);
     }
   };
 
@@ -987,6 +918,20 @@ export default function App() {
       });
     }
   };
+
+  /** Peak envelope + full source length per source path, for clip waveforms. */
+  const sourceWaveforms = useMemo(() => {
+    const map: Record<string, { peaks: number[]; durationMs: number }> = {};
+    for (const source of project.audio_pool || []) {
+      if (source.waveform_peaks && source.waveform_peaks.length > 0) {
+        map[source.path] = {
+          peaks: source.waveform_peaks,
+          durationMs: source.duration_ms,
+        };
+      }
+    }
+    return map;
+  }, [project.audio_pool]);
 
   const totalDurationMs = calculateTotalDurationMs();
   const timelineWidth = Math.max(1800, (totalDurationMs / 1000) * zoom * 1.25);
@@ -1185,6 +1130,8 @@ export default function App() {
                 zoom={zoom}
                 bpm={project.bpm}
                 canvasWidth={timelineWidth}
+                clips={project.clips}
+                snapToGrid={snapToGrid}
                 onSeek={handleSeek}
               />
             </div>
@@ -1200,6 +1147,7 @@ export default function App() {
               snapToGrid={snapToGrid}
               bpm={project.bpm}
               canvasWidth={timelineWidth}
+              sourceWaveforms={sourceWaveforms}
               onSelectClip={setSelectedClipId}
               onSelectTrack={setSelectedTrackIndex}
               onUpdateClip={handleUpdateClip}
@@ -1239,6 +1187,8 @@ export default function App() {
           onWidthChange={setRightSidebarWidth}
           audioPool={project.audio_pool || []}
           onImportToPool={handleImportToPool}
+          onImportRequest={handleImportRequest}
+          isImporting={isImporting}
           onInsertFromPool={handleInsertFromPool}
           onDeleteFromPool={handleDeleteFromPool}
           auditioningId={auditioningId}

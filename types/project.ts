@@ -28,6 +28,12 @@ export interface MetadataDto {
 export interface ClipState {
   id: string;
   name: string;
+  /**
+   * Absolute path to the source file on disk in the desktop build. In the
+   * browser fallback this is a synthetic `browser://<name>` key. Either way it
+   * is the lookup key for the decoded AudioBuffer in AudioEngine, and the path
+   * the Rust exporter opens.
+   */
   source_path: string;
   track_index: number;
   start_time_ms: number;
@@ -36,7 +42,6 @@ export interface ClipState {
   gain: number;
   fade_in_ms: number;
   fade_out_ms: number;
-  peaks?: number[]; // Normalized peaks for fast rendering
 }
 
 export interface TrackState {
@@ -75,14 +80,29 @@ export interface MasterDspSettings {
 export interface SourceAudioFile {
   id: string;
   name: string;
+  /** Absolute path on disk, or a `browser://` key in the web fallback. */
+  path: string;
   format: string; // 'WAV' | 'MP3' | 'FLAC' | 'OGG' | 'AAC'
   duration_ms: number;
   sample_rate: number;
   channels: number;
   size_bytes: number;
-  data_url?: string;
+  /** Normalized 0..1 absolute peak envelope used to draw clip waveforms. */
   waveform_peaks?: number[];
   date_added?: string;
+}
+
+/** Mirrors the Rust `AudioFileInfo` returned by `analyze_audio_file`. */
+export interface AudioFileInfo {
+  path: string;
+  name: string;
+  format: string;
+  duration_ms: number;
+  sample_rate: number;
+  channels: number;
+  size_bytes: number;
+  peaks: number[];
+  metadata: MetadataDto;
 }
 
 export interface ProjectState {
@@ -105,9 +125,23 @@ export interface WaveformPeaks {
   channels: number;
 }
 
+/** WAV only for now. Compressed formats are a later milestone. */
+export type ExportFormat = 'wav_16' | 'wav_24' | 'wav_32f';
+
 export interface ExportOptions {
   export_path: string;
-  format: 'wav_24' | 'wav_32f' | 'flac' | 'mp3';
+  format: ExportFormat;
   normalize_to_target_lufs: boolean;
   dither: boolean;
+}
+
+/** Mirrors the Rust `ExportResult`. */
+export interface ExportResult {
+  path: string;
+  duration_ms: number;
+  measured_lufs: number;
+  peak_db: number;
+  sample_rate: number;
+  format: string;
+  message: string;
 }

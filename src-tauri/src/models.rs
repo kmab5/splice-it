@@ -30,6 +30,9 @@ pub struct MetadataDto {
 }
 
 /// A non-destructive audio clip placed on a timeline track.
+///
+/// `source_path` is an absolute path on disk. The export engine decodes that file
+/// and reads `duration_ms` worth of audio starting at `offset_ms` into the source.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipState {
     pub id: String,
@@ -59,19 +62,19 @@ pub struct TrackState {
 /// Master DSP settings for EQ, Dynamics, Stereo Imaging, and True-Peak Limiter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MasterDspSettings {
-    pub eq_high_cut_hz: f32,       // Target harsh high frequencies (default 12000.0)
-    pub eq_high_cut_gain_db: f32,  // Attenuation e.g. -3.0 dB
-    pub eq_mud_scoop_hz: f32,      // Mud scoop center frequency (200 - 400 Hz)
-    pub eq_mud_scoop_q: f32,       // Q factor e.g. 1.414
-    pub eq_mud_scoop_gain_db: f32, // Scoop gain e.g. -2.5 dB
-    pub comp_threshold_db: f32,    // -18.0 dB
-    pub comp_ratio: f32,           // 3.0:1
-    pub comp_attack_ms: f32,       // 20.0 ms
-    pub comp_release_ms: f32,      // 100.0 ms
-    pub stereo_width: f32,         // 0.0 (Mono) to 2.0 (200% exaggerated stereo)
-    pub limiter_threshold_db: f32, // -1.0 dB
-    pub limiter_ceiling_db: f32,   // -0.3 dB True Peak
-    pub target_lufs: f32,          // -14.0 LUFS streaming standard
+    pub eq_high_cut_hz: f32,
+    pub eq_high_cut_gain_db: f32,
+    pub eq_mud_scoop_hz: f32,
+    pub eq_mud_scoop_q: f32,
+    pub eq_mud_scoop_gain_db: f32,
+    pub comp_threshold_db: f32,
+    pub comp_ratio: f32,
+    pub comp_attack_ms: f32,
+    pub comp_release_ms: f32,
+    pub stereo_width: f32,
+    pub limiter_threshold_db: f32,
+    pub limiter_ceiling_db: f32,
+    pub target_lufs: f32,
 }
 
 impl Default for MasterDspSettings {
@@ -117,11 +120,62 @@ pub struct WaveformPeaks {
     pub channels: u16,
 }
 
-/// Options for mixdown export.
+/// Everything the UI needs to register a source file in the audio pool,
+/// gathered in a single decode pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioFileInfo {
+    pub path: String,
+    pub name: String,
+    pub format: String,
+    pub duration_ms: f64,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub size_bytes: u64,
+    /// Normalized 0.0 - 1.0 absolute peak envelope for waveform drawing.
+    pub peaks: Vec<f32>,
+    /// Tags already embedded in the source file, if any.
+    pub metadata: MetadataDto,
+}
+
+/// Options for mixdown export. Only WAV targets are supported at this stage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportOptions {
     pub export_path: String,
-    pub format: String, // "wav_24", "wav_32f", "flac", "mp3"
+    /// "wav_16" | "wav_24" | "wav_32f"
+    pub format: String,
     pub normalize_to_target_lufs: bool,
     pub dither: bool,
+}
+
+/// Result of a completed mixdown render.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportResult {
+    pub path: String,
+    pub duration_ms: f64,
+    pub measured_lufs: f32,
+    pub peak_db: f32,
+    pub sample_rate: u32,
+    pub format: String,
+    pub message: String,
+}
+
+/// Fully decoded stereo audio held in memory during a render.
+pub struct DecodedAudio {
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+impl DecodedAudio {
+    pub fn frames(&self) -> usize {
+        self.left.len()
+    }
+
+    pub fn duration_ms(&self) -> f64 {
+        if self.sample_rate == 0 {
+            return 0.0;
+        }
+        (self.frames() as f64 / self.sample_rate as f64) * 1000.0
+    }
 }

@@ -1,6 +1,14 @@
 import { MasterDspSettings, TrackState, ClipState } from '../types/project';
 import { dbToLinear } from './dspMath';
 
+/**
+ * Web Audio playback engine.
+ *
+ * Decoded audio is cached by SOURCE PATH, not by clip id, so any number of
+ * clips referencing the same file share one AudioBuffer. Nothing in here
+ * synthesizes audio: if a source has not been registered, the clip is silent
+ * and the caller is expected to load it.
+ */
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private isPlaying: boolean = false;
@@ -13,33 +21,31 @@ export class AudioEngine {
   private highShelfNode: BiquadFilterNode | null = null;
   private mudScoopNode: BiquadFilterNode | null = null;
   private compressorNode: DynamicsCompressorNode | null = null;
-  private midGainNode: GainNode | null = null;
-  private sideGainNode: GainNode | null = null;
   private analyserNode: AnalyserNode | null = null;
 
-  // Per-track Nodes
+  // Per-track nodes, keyed by track index
   private trackNodes: Map<number, { gain: GainNode; panner: StereoPannerNode }> = new Map();
-  // Active audio buffer sources currently playing
   private activeSources: AudioBufferSourceNode[] = [];
-  // Decoded or synthesized audio buffers keyed by clip ID
-  public clipBuffers: Map<string, AudioBuffer> = new Map();
 
-  // Playhead listener
+  /** Decoded source audio, keyed by absolute path (or `browser://` key). */
+  public sourceBuffers: Map<string, AudioBuffer> = new Map();
+
+  // Audition preview
+  private auditionSource: AudioBufferSourceNode | null = null;
+
   private onTimeUpdateCallback: ((timeMs: number) => void) | null = null;
   private animFrameId: number | null = null;
 
-  constructor() {
-    // Lazy initialized on first user gesture to comply with browser autoplay policy
-  }
-
   public getAudioContext(): AudioContext {
     if (!this.ctx) {
-      const AudioCtxClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      this.ctx = new AudioCtxClass({ sampleRate: 44100 });
+      const AudioCtxClass =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      this.ctx = new AudioCtxClass();
       this.setupMasterChain();
     }
     if (this.ctx.state === 'suspended') {
-      this.ctx.resume();
+      void this.ctx.resume();
     }
     return this.ctx;
   }
@@ -72,14 +78,50 @@ export class AudioEngine {
     this.analyserNode.fftSize = 1024;
     this.analyserNode.smoothingTimeConstant = 0.8;
 
-    // Connect DSP chain:
-    // Track Nodes -> highShelfNode -> mudScoopNode -> compressorNode -> masterGain -> analyserNode -> destination
     this.highShelfNode.connect(this.mudScoopNode);
     this.mudScoopNode.connect(this.compressorNode);
     this.compressorNode.connect(this.masterGain);
     this.masterGain.connect(this.analyserNode);
     this.analyserNode.connect(ctx.destination);
   }
+
+  // -------------------------------------------------------------------------
+  // Source registration
+  // -------------------------------------------------------------------------
+
+  public hasSource(path: string): boolean {
+    return this.sourceBuffers.has(path);
+  }
+
+  public getSource(path: string): AudioBuffer | undefined {
+    return this.sourceBuffers.get(path);
+  }
+
+  /** Decode raw file bytes and cache them under the given path key. */
+  public async registerSource(path: string, bytes: ArrayBuffer): Promise<AudioBuffer> {
+    const existing = this.sourceBuffers.get(path);
+    if (existing) return existing;
+
+    const ctx = this.getAudioContext();
+    // decodeAudioData detaches the buffer it is given, so hand it a copy.
+    const buffer = await ctx.decodeAudioData(bytes.slice(0));
+    this.sourceBuffers.set(path, buffer);
+    return buffer;
+  }
+
+  /** Browser fallback: decode a File object picked through an <input>. */
+  public async registerSourceFromFile(path: string, file: File): Promise<AudioBuffer> {
+    const arrayBuffer = await file.arrayBuffer();
+    return this.registerSource(path, arrayBuffer);
+  }
+
+  public removeSource(path: string) {
+    this.sourceBuffers.delete(path);
+  }
+
+  // -------------------------------------------------------------------------
+  // Master + track parameters
+  // -------------------------------------------------------------------------
 
   public updateMasterDsp(dsp: MasterDspSettings) {
     if (!this.ctx) return;
@@ -101,9 +143,7 @@ export class AudioEngine {
       this.compressorNode.release.setValueAtTime(dsp.comp_release_ms * 0.001, now);
     }
     if (this.masterGain) {
-      // Apply limiter threshold / ceiling
-      const ceilingGain = dbToLinear(dsp.limiter_ceiling_db);
-      this.masterGain.gain.setValueAtTime(ceilingGain, now);
+      this.masterGain.gain.setValueAtTime(dbToLinear(dsp.limiter_ceiling_db), now);
     }
   }
 
@@ -124,7 +164,6 @@ export class AudioEngine {
         this.trackNodes.set(index, nodeGroup);
       }
 
-      // Calculate effective volume considering mute and solo
       let effectiveVol = track.volume;
       if (track.muted || (hasAnySolo && !track.solo)) {
         effectiveVol = 0;
@@ -135,6 +174,10 @@ export class AudioEngine {
       nodeGroup.panner.pan.setValueAtTime(Math.max(-1, Math.min(1, track.pan)), now);
     });
   }
+
+  // -------------------------------------------------------------------------
+  // Transport
+  // -------------------------------------------------------------------------
 
   public play(
     startMs: number,
@@ -154,7 +197,6 @@ export class AudioEngine {
 
     this.updateTracks(tracks);
 
-    // Schedule all clips that end after startMs
     clips.forEach((clip) => {
       const clipEndMs = clip.start_time_ms + clip.duration_ms;
       if (clipEndMs <= startMs) return;
@@ -162,17 +204,16 @@ export class AudioEngine {
       const trackNode = this.trackNodes.get(clip.track_index);
       if (!trackNode) return;
 
-      const buffer = this.clipBuffers.get(clip.id);
+      const buffer = this.sourceBuffers.get(clip.source_path);
+      // No decoded audio for this source yet: stay silent rather than fake it.
       if (!buffer) return;
 
       const src = ctx.createBufferSource();
       src.buffer = buffer;
 
-      // Clip gain node for fade in/out and clip level
       const clipGain = ctx.createGain();
       clipGain.gain.value = clip.gain;
 
-      // Apply fades if applicable
       const clipStartTimeSec = this.startTime + clip.start_time_ms / 1000;
       const fadeInSec = clip.fade_in_ms / 1000;
       const fadeOutSec = clip.fade_out_ms / 1000;
@@ -190,7 +231,6 @@ export class AudioEngine {
       src.connect(clipGain);
       clipGain.connect(trackNode.gain);
 
-      // Compute scheduling offsets
       let when = ctx.currentTime;
       let offset = clip.offset_ms / 1000;
       let duration = clip.duration_ms / 1000;
@@ -198,11 +238,14 @@ export class AudioEngine {
       if (clip.start_time_ms >= startMs) {
         when = this.startTime + clip.start_time_ms / 1000;
       } else {
-        // Clip already started, offset playback
         const elapsedSinceClipStartSec = (startMs - clip.start_time_ms) / 1000;
         offset += elapsedSinceClipStartSec;
         duration -= elapsedSinceClipStartSec;
       }
+
+      // Never ask the source for audio past the end of the decoded buffer.
+      const available = Math.max(0, buffer.duration - offset);
+      duration = Math.min(duration, available);
 
       if (duration > 0) {
         src.start(Math.max(ctx.currentTime, when), offset, duration);
@@ -238,7 +281,7 @@ export class AudioEngine {
         s.stop();
         s.disconnect();
       } catch {
-        // Source might already have ended
+        // Source may already have ended.
       }
     });
     this.activeSources = [];
@@ -267,6 +310,47 @@ export class AudioEngine {
     this.animFrameId = requestAnimationFrame(loop);
   }
 
+  // -------------------------------------------------------------------------
+  // Audition preview (audio pool)
+  // -------------------------------------------------------------------------
+
+  /** Play a pool source straight to the destination. Returns false if not loaded. */
+  public startAudition(path: string, onEnded: () => void): boolean {
+    const buffer = this.sourceBuffers.get(path);
+    if (!buffer) return false;
+
+    const ctx = this.getAudioContext();
+    this.stopAudition();
+
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+    src.onended = () => {
+      if (this.auditionSource === src) this.auditionSource = null;
+      onEnded();
+    };
+    src.start();
+    this.auditionSource = src;
+    return true;
+  }
+
+  public stopAudition() {
+    if (this.auditionSource) {
+      try {
+        this.auditionSource.onended = null;
+        this.auditionSource.stop();
+        this.auditionSource.disconnect();
+      } catch {
+        // Already stopped.
+      }
+      this.auditionSource = null;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Metering
+  // -------------------------------------------------------------------------
+
   public getAnalyserData(): { wave: Float32Array; freq: Uint8Array; lufs: number; peak: number } {
     if (!this.analyserNode) {
       return { wave: new Float32Array(0), freq: new Uint8Array(0), lufs: -70, peak: 0 };
@@ -285,126 +369,10 @@ export class AudioEngine {
       sumSquare += abs * abs;
     }
 
-    const meanSquare = sumSquare / wave.length;
+    const meanSquare = sumSquare / Math.max(1, wave.length);
     const lufs = meanSquare > 1e-7 ? -0.691 + 10 * Math.log10(meanSquare) : -70;
 
     return { wave, freq, lufs, peak };
-  }
-
-  /**
-   * Synthesize high-fidelity audio buffers for default demo tracks.
-   */
-  public async createDemoBuffers(clips: ClipState[]): Promise<void> {
-    const ctx = this.getAudioContext();
-    const sampleRate = ctx.sampleRate;
-
-    for (const clip of clips) {
-      const length = Math.floor((clip.duration_ms / 1000) * sampleRate);
-      const buffer = ctx.createBuffer(2, length, sampleRate);
-      const left = buffer.getChannelData(0);
-      const right = buffer.getChannelData(1);
-
-      // Track-specific sound synthesis
-      if (clip.track_index === 0) {
-        // Track 0: Drum groove (Kick, snare, hi-hat rhythm at 120 BPM)
-        const bpm = 120;
-        const beatSec = 60 / bpm;
-        for (let i = 0; i < length; i++) {
-          const t = i / sampleRate;
-          const beatPos = (t % beatSec) / beatSec;
-          const barPos = Math.floor(t / beatSec) % 4;
-
-          let kick = 0;
-          let snare = 0;
-          let hihat = 0;
-
-          // Kick on 1 and 3
-          if (barPos === 0 || barPos === 2) {
-            if (beatPos < 0.25) {
-              const env = Math.exp(-beatPos * 25);
-              const freq = 130 * Math.exp(-beatPos * 30) + 45;
-              kick = Math.sin(2 * Math.PI * freq * beatPos * beatSec) * env * 0.7;
-            }
-          }
-
-          // Snare on 2 and 4
-          if (barPos === 1 || barPos === 3) {
-            if (beatPos < 0.2) {
-              const env = Math.exp(-beatPos * 20);
-              const noise = (Math.random() * 2 - 1) * 0.4;
-              const tone = Math.sin(2 * Math.PI * 190 * beatPos * beatSec) * 0.5;
-              snare = (noise + tone) * env * 0.6;
-            }
-          }
-
-          // Hi-hat every 8th note
-          const subBeatPos = (t % (beatSec / 2)) / (beatSec / 2);
-          if (subBeatPos < 0.08) {
-            const env = Math.exp(-subBeatPos * 50);
-            hihat = (Math.random() * 2 - 1) * env * 0.25;
-          }
-
-          left[i] = kick + snare * 0.9 + hihat * 0.8;
-          right[i] = kick + snare * 0.9 + hihat * 1.1;
-        }
-      } else if (clip.track_index === 1) {
-        // Track 1: Sub Bass 808
-        const notes = [55, 55, 65.4, 49.0]; // A1, A1, C2, G1
-        for (let i = 0; i < length; i++) {
-          const t = i / sampleRate;
-          const noteIdx = Math.floor(t / 2) % notes.length;
-          const freq = notes[noteIdx];
-          const sub = Math.sin(2 * Math.PI * freq * t);
-          const harm = Math.sin(2 * Math.PI * freq * 2 * t) * 0.2;
-          const env = 0.5 + 0.5 * Math.sin(2 * Math.PI * 2 * t);
-          const val = (sub + harm) * 0.45 * env;
-          left[i] = val;
-          right[i] = val;
-        }
-      } else if (clip.track_index === 2) {
-        // Track 2: Warm Analog Chords
-        const chords = [
-          [220, 261.63, 329.63], // Am
-          [174.61, 220, 261.63], // F
-          [261.63, 329.63, 392], // C
-          [196, 246.94, 293.66], // G
-        ];
-        for (let i = 0; i < length; i++) {
-          const t = i / sampleRate;
-          const chordIdx = Math.floor(t / 2) % chords.length;
-          const chord = chords[chordIdx];
-          let valL = 0;
-          let valR = 0;
-          chord.forEach((freq, idx) => {
-            const detune = 1 + (idx - 1) * 0.003;
-            valL += Math.sin(2 * Math.PI * freq * t) * 0.12;
-            valR += Math.sin(2 * Math.PI * (freq * detune) * t) * 0.12;
-          });
-          left[i] = valL;
-          right[i] = valR;
-        }
-      } else {
-        // Track 3: Atmospheric Texture / Vocal Pad
-        for (let i = 0; i < length; i++) {
-          const t = i / sampleRate;
-          const shimmer = Math.sin(2 * Math.PI * 440 * t) * Math.sin(2 * Math.PI * 3 * t) * 0.1;
-          const air = (Math.random() * 2 - 1) * 0.03;
-          left[i] = shimmer * 0.8 + air;
-          right[i] = shimmer * 1.2 + air;
-        }
-      }
-
-      this.clipBuffers.set(clip.id, buffer);
-    }
-  }
-
-  /**
-   * Loads an uploaded audio file into an AudioBuffer.
-   */
-  public async loadAudioFile(file: File): Promise<AudioBuffer> {
-    const ctx = this.getAudioContext();
-    const arrayBuffer = await file.arrayBuffer();
-    return await ctx.decodeAudioData(arrayBuffer);
   }
 }
 

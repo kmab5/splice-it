@@ -110,7 +110,9 @@ impl DynamicCompressor {
             ratio: ratio.max(1.0),
             attack_coeff,
             release_coeff,
-            envelope: 0.0,
+            // Starts at unity gain. Initialising to 0.0 made every render fade
+            // in from silence over the release time.
+            envelope: 1.0,
         }
     }
 

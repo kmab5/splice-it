@@ -1,143 +1,197 @@
-import { MetadataDto, ProjectState, WaveformPeaks } from '../types/project';
+import {
+  AudioFileInfo,
+  ExportOptions,
+  ExportResult,
+  MetadataDto,
+  ProjectState,
+  WaveformPeaks,
+} from '../types/project';
 import { renderAndExportWav } from './wavExporter';
 import { audioEngine } from './audioEngine';
 
-// Check if running inside the Tauri v2 desktop shell
+/** Prefix used for pool entries in the browser fallback, where there is no real path. */
+export const BROWSER_PATH_PREFIX = 'browser://';
+
+export function isBrowserPath(path: string): boolean {
+  return path.startsWith(BROWSER_PATH_PREFIX);
+}
+
+/** True when running inside the Tauri v2 desktop shell. */
 export function isTauri(): boolean {
-  return typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
+  return (
+    typeof window !== 'undefined' &&
+    ('__TAURI_INTERNALS__' in window || '__TAURI__' in window)
+  );
 }
 
-/**
- * Load audio metadata via Tauri lofty crate or browser fallback.
- */
-export async function loadAudioMetadata(path: string): Promise<MetadataDto> {
-  if (isTauri()) {
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      return await invoke<MetadataDto>('load_audio_metadata', { path });
-    } catch (e) {
-      console.warn('Tauri invoke failed, using browser fallback:', e);
-    }
-  }
-
-  // Web Browser Fallback
-  return {
-    title: 'Neon Skyline (Master)',
-    artist: 'Aether Wave',
-    album: 'Parallel Horizons',
-    year: 2026,
-    track_number: 1,
-    total_tracks: 8,
-    disc_number: 1,
-    genre: 'Synthwave / Cyberpunk',
-    comment: 'Mastered with Splice It DSP Chain (-14 LUFS)',
-    composer: 'Aether Wave',
-    isrc: 'US-SP1-26-00101',
-    bpm: 120,
-    key: 'A minor',
-    lyrics: 'Cruising through the electric night\nCircuits humming in the neon light...',
-    copyright: '© 2026 Splice It Records',
-    publisher: 'Splice It Music Group',
-    encoder: 'Splice It Rust DSP Engine v2.0',
-    cover_art_base64: undefined,
-    cover_art_mime: 'image/jpeg',
-  };
+async function invokeCmd<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<T>(cmd, args);
 }
 
-/**
- * Save audio metadata via Tauri lofty crate or browser fallback.
- */
-export async function saveAudioMetadata(path: string, metadata: MetadataDto): Promise<void> {
-  if (isTauri()) {
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      return await invoke<void>('save_audio_metadata', { path, metadata });
-    } catch (e) {
-      console.warn('Tauri invoke failed, using browser fallback:', e);
-    }
-  }
+// ---------------------------------------------------------------------------
+// Native dialogs
+// ---------------------------------------------------------------------------
 
-  // Web Browser Fallback: simulated success
-  console.log('Browser mode: Metadata saved to project state', metadata);
+const AUDIO_EXTENSIONS = ['wav', 'mp3', 'flac', 'ogg', 'oga', 'm4a', 'aac', 'aiff', 'aif'];
+
+/**
+ * Native multi-select audio picker. Returns absolute paths, or null when the
+ * shell is unavailable so callers can fall back to an <input type="file">.
+ */
+export async function pickAudioFiles(): Promise<string[] | null> {
+  if (!isTauri()) return null;
+
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const selected = await open({
+    multiple: true,
+    directory: false,
+    title: 'Import source audio',
+    filters: [{ name: 'Audio', extensions: AUDIO_EXTENSIONS }],
+  });
+
+  if (selected === null) return [];
+  return Array.isArray(selected) ? selected : [selected];
 }
 
+export async function pickProjectFile(): Promise<string | null> {
+  if (!isTauri()) return null;
+
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const selected = await open({
+    multiple: false,
+    directory: false,
+    title: 'Open Splice It project',
+    filters: [{ name: 'Splice It Project', extensions: ['sic', 'audioproj', 'json'] }],
+  });
+
+  return typeof selected === 'string' ? selected : null;
+}
+
+export async function pickSavePath(
+  defaultName: string,
+  extensions: string[],
+  title: string
+): Promise<string | null> {
+  if (!isTauri()) return null;
+
+  const { save } = await import('@tauri-apps/plugin-dialog');
+  const path = await save({
+    title,
+    defaultPath: defaultName,
+    filters: [{ name: extensions[0].toUpperCase(), extensions }],
+  });
+
+  return path ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Source audio
+// ---------------------------------------------------------------------------
+
 /**
- * Generate waveform peaks via Tauri Symphonia background worker or Web Audio.
+ * Decode a source file once in Rust and return duration, stream properties,
+ * a peak envelope, and any embedded tags.
  */
+export async function analyzeAudioFile(
+  path: string,
+  peakBuckets = 1200
+): Promise<AudioFileInfo> {
+  return invokeCmd<AudioFileInfo>('analyze_audio_file', { path, peakBuckets });
+}
+
+/** Raw bytes of a source file, for decoding with Web Audio for preview playback. */
+export async function readAudioFileBytes(path: string): Promise<ArrayBuffer> {
+  const result = await invokeCmd<ArrayBuffer | number[]>('read_audio_file_bytes', { path });
+  // Tauri returns raw responses as an ArrayBuffer; older shells may hand back an array.
+  if (result instanceof ArrayBuffer) return result;
+  return new Uint8Array(result).buffer;
+}
+
 export async function generateWaveformPeaks(
   path: string,
-  samplesPerPixel: number = 256
+  samplesPerPixel = 256
 ): Promise<WaveformPeaks> {
-  if (isTauri()) {
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      return await invoke<WaveformPeaks>('generate_waveform_peaks', {
-        path,
-        samplesPerPixel,
-      });
-    } catch (e) {
-      console.warn('Tauri invoke failed, using browser fallback:', e);
-    }
-  }
-
-  // Web Browser fallback: generate realistic peak curve
-  const points = 240;
-  const minPeaks: number[] = [];
-  const maxPeaks: number[] = [];
-  for (let i = 0; i < points; i++) {
-    const env = 0.4 + 0.5 * Math.sin((i / points) * Math.PI * 4) * Math.cos(i * 0.15);
-    const amp = Math.min(0.95, Math.max(0.1, Math.abs(env)));
-    maxPeaks.push(amp);
-    minPeaks.push(-amp * (0.8 + Math.random() * 0.2));
-  }
-
-  return {
-    min_peaks: minPeaks,
-    max_peaks: maxPeaks,
-    duration_ms: 8000,
-    sample_rate: 44100,
-    channels: 2,
-  };
+  return invokeCmd<WaveformPeaks>('generate_waveform_peaks', { path, samplesPerPixel });
 }
 
+// ---------------------------------------------------------------------------
+// Metadata
+// ---------------------------------------------------------------------------
+
+export async function loadAudioMetadata(path: string): Promise<MetadataDto> {
+  if (!isTauri() || isBrowserPath(path)) return {};
+  try {
+    return await invokeCmd<MetadataDto>('load_audio_metadata', { path });
+  } catch (e) {
+    // Untagged files are normal, not an error worth surfacing.
+    console.warn('No readable tags on', path, e);
+    return {};
+  }
+}
+
+export async function saveAudioMetadata(path: string, metadata: MetadataDto): Promise<void> {
+  if (!isTauri() || isBrowserPath(path)) {
+    throw new Error('Writing tags to disk requires the desktop app.');
+  }
+  await invokeCmd<void>('save_audio_metadata', { path, metadata });
+}
+
+// ---------------------------------------------------------------------------
+// Project files
+// ---------------------------------------------------------------------------
+
+export async function readTextFile(path: string): Promise<string> {
+  return invokeCmd<string>('read_text_file', { path });
+}
+
+export async function writeTextFile(path: string, contents: string): Promise<void> {
+  return invokeCmd<void>('write_text_file', { path, contents });
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
 /**
- * Export project mixdown with master DSP mastering chain.
+ * Render the timeline mixdown. In the desktop shell this hands off to the Rust
+ * engine, which decodes every source and writes the file to `options.export_path`.
+ * In the browser it renders with Web Audio and triggers a download instead.
  */
 export async function exportProject(
   project: ProjectState,
-  exportPath: string
-): Promise<{ success: boolean; message: string; downloadUrl?: string; lufs?: number }> {
+  options: ExportOptions
+): Promise<{ success: boolean; message: string; result?: ExportResult }> {
   if (isTauri()) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const msg = await invoke<string>('export_project', { project, exportPath });
-      return { success: true, message: msg };
+      const result = await invokeCmd<ExportResult>('export_project', { project, options });
+      return { success: true, message: result.message, result };
     } catch (e) {
-      console.warn('Tauri invoke failed, using browser fallback:', e);
+      const msg = e instanceof Error ? e.message : String(e);
+      // A backend failure is a real failure. Silently falling back to the
+      // browser renderer is what previously made a broken export look fine.
+      return { success: false, message: msg };
     }
   }
 
-  // Web Browser fallback: render 24-bit WAV directly and trigger file download
   try {
-    const result = await renderAndExportWav(project, audioEngine.clipBuffers);
+    const rendered = await renderAndExportWav(project, audioEngine.sourceBuffers, options);
     const a = document.createElement('a');
-    a.href = result.url;
-    a.download = `${project.name.replace(/\s+/g, '_')}_Master_24bit.wav`;
+    a.href = rendered.url;
+    a.download = `${project.name.replace(/\s+/g, '_')}_Master.wav`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(rendered.url), 30000);
 
     return {
       success: true,
-      message: `Master mixdown exported successfully (-14 LUFS target matched: ${result.lufs.toFixed(1)} LUFS).`,
-      downloadUrl: result.url,
-      lufs: result.lufs,
+      message: `Downloaded mixdown (${rendered.lufs.toFixed(1)} LUFS). Tags are not embedded in browser mode.`,
     };
   } catch (err: unknown) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
     return {
       success: false,
-      message: `Export failed: ${errorMessage}`,
+      message: `Export failed: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 }

@@ -25,8 +25,10 @@ import {
   AudioWaveform,
   Layers,
   Sparkles,
+  Loader2,
 } from 'lucide-react';
 import { ProjectState, SourceAudioFile } from '../types/project';
+import { isTauri } from '../services/ipc';
 
 interface RightSidebarProps {
   isOpen: boolean;
@@ -39,7 +41,7 @@ interface RightSidebarProps {
   project: ProjectState;
   onNewProject: () => void;
   onSaveProject: () => void;
-  onOpenProject: (file: File) => void;
+  onOpenProject: (file?: File) => void;
   onOpenExportModal: () => void;
   // Timeline Snap & Zoom
   snapToGrid: boolean;
@@ -57,7 +59,11 @@ interface RightSidebarProps {
   onWidthChange?: (newWidth: number) => void;
   // Audio Pool Management
   audioPool: SourceAudioFile[];
+  /** Browser fallback: called with a File chosen through the hidden input. */
   onImportToPool: (file: File) => void;
+  /** Opens the native picker. Resolves false when there is no desktop shell. */
+  onImportRequest?: () => Promise<boolean>;
+  isImporting?: boolean;
   onInsertFromPool: (source: SourceAudioFile, trackIndex?: number) => void;
   onDeleteFromPool: (sourceId: string) => void;
   auditioningId: string | null;
@@ -89,6 +95,8 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   onWidthChange,
   audioPool,
   onImportToPool,
+  onImportRequest,
+  isImporting = false,
   onInsertFromPool,
   onDeleteFromPool,
   auditioningId,
@@ -126,7 +134,20 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   };
 
   const handleOpenClick = () => {
+    if (isTauri()) {
+      onOpenProject();
+      return;
+    }
     fileInputRef.current?.click();
+  };
+
+  /** Native audio picker when available, hidden <input> otherwise. */
+  const handleImportClick = async () => {
+    if (onImportRequest) {
+      const handled = await onImportRequest();
+      if (handled) return;
+    }
+    poolFileInputRef.current?.click();
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -560,17 +581,25 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
               }}
               onDragLeave={() => setIsDraggingOver(false)}
               onDrop={handleDropPool}
-              onClick={() => poolFileInputRef.current?.click()}
+              onClick={() => void handleImportClick()}
               className={`border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition ${
                 isDraggingOver
                   ? 'border-cyan-400 bg-cyan-950/30 text-cyan-300'
                   : 'border-slate-800 hover:border-slate-700 bg-slate-900/40 text-slate-400 hover:text-slate-300'
               }`}
             >
-              <UploadCloud className="w-6 h-6 mx-auto mb-1 text-cyan-400 opacity-80" />
-              <div className="text-xs font-semibold text-slate-200">Import Source Audio</div>
+              {isImporting ? (
+                <Loader2 className="w-6 h-6 mx-auto mb-1 text-cyan-400 animate-spin" />
+              ) : (
+                <UploadCloud className="w-6 h-6 mx-auto mb-1 text-cyan-400 opacity-80" />
+              )}
+              <div className="text-xs font-semibold text-slate-200">
+                {isImporting ? 'Analyzing audio...' : 'Import Source Audio'}
+              </div>
               <div className="text-[10px] text-slate-400 mt-0.5">
-                Drop WAV, MP3, FLAC, OGG, AAC or click to browse
+                {isImporting
+                  ? 'Decoding and reading tags'
+                  : 'WAV, MP3, FLAC, OGG, AAC or click to browse'}
               </div>
             </div>
 

@@ -1,13 +1,14 @@
+use std::collections::HashMap;
 use std::fs::File;
-use std::io::Cursor;
 use std::path::Path;
+
 use base64::Engine;
+use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::picture::{MimeType, Picture, PictureType};
-use lofty::config::WriteOptions;
 use lofty::tag::{Accessor, ItemKey, Tag, TagExt};
-use symphonia::core::audio::{AudioBufferRef, SampleBuffer, Signal};
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::audio::SampleBuffer;
+use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
@@ -15,22 +16,169 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
 use crate::dsp::MasterDspChain;
-use crate::models::{MetadataDto, ProjectState, WaveformPeaks};
+use crate::models::{
+    AudioFileInfo, DecodedAudio, ExportOptions, ExportResult, MetadataDto, ProjectState,
+    WaveformPeaks,
+};
 
-/// Read standard and extended metadata tags and cover artwork using `lofty`.
-#[tauri::command]
-pub async fn load_audio_metadata(path: String) -> Result<MetadataDto, String> {
-    let file_path = Path::new(&path);
-    if !file_path.exists() {
-        return Err(format!("File not found: {}", path));
+// ---------------------------------------------------------------------------
+// Decoding
+// ---------------------------------------------------------------------------
+
+/// Decode any Symphonia-supported container to de-interleaved stereo f32.
+/// Mono sources are duplicated to both channels; sources with more than two
+/// channels keep only the first two.
+fn decode_file(path: &str) -> Result<DecodedAudio, String> {
+    let file = File::open(path).map_err(|e| format!("Cannot open '{}': {}", path, e))?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    // Giving Symphonia the file extension greatly improves probe reliability.
+    let mut hint = Hint::new();
+    if let Some(ext) = Path::new(path).extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
     }
 
-    let tagged_file = lofty::read_from_path(file_path)
-        .map_err(|e| format!("Failed to parse audio tags: {}", e))?;
+    let format_opts = FormatOptions {
+        enable_gapless: true,
+        ..Default::default()
+    };
 
-    let tag = match tagged_file.primary_tag() {
-        Some(primary) => primary,
-        None => tagged_file.first_tag().ok_or_else(|| "No tags found in audio file".to_string())?,
+    let probed = symphonia::default::get_probe()
+        .format(&hint, mss, &format_opts, &MetadataOptions::default())
+        .map_err(|e| format!("Unsupported or corrupt audio '{}': {}", path, e))?;
+
+    let mut format = probed.format;
+
+    let track = format
+        .default_track()
+        .ok_or_else(|| format!("No decodable audio track in '{}'", path))?;
+    let track_id = track.id;
+    let sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
+
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|e| format!("Decoder init failed for '{}': {}", path, e))?;
+
+    let mut left: Vec<f32> = Vec::new();
+    let mut right: Vec<f32> = Vec::new();
+    let mut sample_buf: Option<SampleBuffer<f32>> = None;
+    let mut buf_capacity: u64 = 0;
+    let mut channels: u16 = 2;
+
+    loop {
+        let packet = match format.next_packet() {
+            Ok(p) => p,
+            // End of stream, or a truncated file: keep whatever decoded cleanly.
+            Err(SymphoniaError::IoError(_)) => break,
+            Err(SymphoniaError::ResetRequired) => break,
+            Err(e) => return Err(format!("Read error in '{}': {}", path, e)),
+        };
+
+        if packet.track_id() != track_id {
+            continue;
+        }
+
+        match decoder.decode(&packet) {
+            Ok(decoded) => {
+                let spec = *decoded.spec();
+                let ch = spec.channels.count().max(1);
+                channels = ch as u16;
+
+                // Packet sizes can grow mid-stream, so the scratch buffer is
+                // re-allocated whenever a larger frame arrives.
+                let needed = decoded.capacity() as u64;
+                if sample_buf.is_none() || needed > buf_capacity {
+                    sample_buf = Some(SampleBuffer::<f32>::new(needed, spec));
+                    buf_capacity = needed;
+                }
+
+                if let Some(buf) = sample_buf.as_mut() {
+                    buf.copy_interleaved_ref(decoded);
+                    let samples = buf.samples();
+                    let frames = samples.len() / ch;
+
+                    left.reserve(frames);
+                    right.reserve(frames);
+
+                    for f in 0..frames {
+                        let l = samples[f * ch];
+                        let r = if ch > 1 { samples[f * ch + 1] } else { l };
+                        left.push(l);
+                        right.push(r);
+                    }
+                }
+            }
+            // A single bad frame should not abort a whole render.
+            Err(SymphoniaError::DecodeError(_)) => continue,
+            Err(SymphoniaError::IoError(_)) => break,
+            Err(e) => return Err(format!("Decode error in '{}': {}", path, e)),
+        }
+    }
+
+    if left.is_empty() {
+        return Err(format!("Decoded zero audio frames from '{}'", path));
+    }
+
+    Ok(DecodedAudio {
+        left,
+        right,
+        sample_rate,
+        channels,
+    })
+}
+
+/// Linear-interpolating resampler. Adequate for matching stems to the project
+/// rate; a windowed-sinc stage can replace this later without changing callers.
+fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+    if from_rate == to_rate || input.is_empty() {
+        return input.to_vec();
+    }
+
+    let ratio = to_rate as f64 / from_rate as f64;
+    let out_len = ((input.len() as f64) * ratio).round().max(1.0) as usize;
+    let mut out = Vec::with_capacity(out_len);
+
+    for i in 0..out_len {
+        let src_pos = i as f64 / ratio;
+        let idx = src_pos.floor() as usize;
+        let frac = (src_pos - idx as f64) as f32;
+
+        let a = input.get(idx).copied().unwrap_or(0.0);
+        let b = input.get(idx + 1).copied().unwrap_or(a);
+        out.push(a + (b - a) * frac);
+    }
+
+    out
+}
+
+fn conform_to_rate(audio: DecodedAudio, target_rate: u32) -> DecodedAudio {
+    if audio.sample_rate == target_rate {
+        return audio;
+    }
+    let left = resample_linear(&audio.left, audio.sample_rate, target_rate);
+    let right = resample_linear(&audio.right, audio.sample_rate, target_rate);
+    DecodedAudio {
+        left,
+        right,
+        sample_rate: target_rate,
+        channels: audio.channels,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Metadata
+// ---------------------------------------------------------------------------
+
+fn read_tags(path: &str) -> MetadataDto {
+    let file_path = Path::new(path);
+    let tagged_file = match lofty::read_from_path(file_path) {
+        Ok(t) => t,
+        Err(_) => return MetadataDto::default(),
+    };
+
+    let tag = match tagged_file.primary_tag().or_else(|| tagged_file.first_tag()) {
+        Some(t) => t,
+        None => return MetadataDto::default(),
     };
 
     let mut dto = MetadataDto {
@@ -45,206 +193,329 @@ pub async fn load_audio_metadata(path: String) -> Result<MetadataDto, String> {
         comment: tag.comment().map(|s| s.to_string()),
         composer: tag.get_string(&ItemKey::Composer).map(|s| s.to_string()),
         isrc: tag.get_string(&ItemKey::Isrc).map(|s| s.to_string()),
-        bpm: tag.get_string(&ItemKey::Bpm).and_then(|s| s.parse::<f64>().ok()),
+        bpm: tag
+            .get_string(&ItemKey::Bpm)
+            .and_then(|s| s.parse::<f64>().ok()),
         key: tag.get_string(&ItemKey::InitialKey).map(|s| s.to_string()),
         lyrics: tag.get_string(&ItemKey::Lyrics).map(|s| s.to_string()),
-        copyright: tag.get_string(&ItemKey::CopyrightMessage).map(|s| s.to_string()),
+        copyright: tag
+            .get_string(&ItemKey::CopyrightMessage)
+            .map(|s| s.to_string()),
         publisher: tag.get_string(&ItemKey::Publisher).map(|s| s.to_string()),
         encoder: tag.get_string(&ItemKey::EncodedBy).map(|s| s.to_string()),
         cover_art_base64: None,
         cover_art_mime: None,
     };
 
-    // Extract cover artwork if present
     if let Some(pic) = tag.pictures().first() {
         let mime = match pic.mime_type() {
             Some(MimeType::Png) => "image/png",
             Some(MimeType::Jpeg) => "image/jpeg",
             _ => "image/jpeg",
         };
-        let encoded = base64::engine::general_purpose::STANDARD.encode(pic.data());
-        dto.cover_art_base64 = Some(encoded);
+        dto.cover_art_base64 =
+            Some(base64::engine::general_purpose::STANDARD.encode(pic.data()));
         dto.cover_art_mime = Some(mime.to_string());
     }
 
-    Ok(dto)
+    dto
 }
 
-/// Write standard and extended audio metadata back to the audio container using `lofty`.
-#[tauri::command]
-pub async fn save_audio_metadata(path: String, metadata: MetadataDto) -> Result<(), String> {
-    let file_path = Path::new(&path);
-    if !file_path.exists() {
-        return Err(format!("Audio file does not exist: {}", path));
-    }
+fn write_tags(path: &str, metadata: &MetadataDto) -> Result<(), String> {
+    let file_path = Path::new(path);
 
     let mut tagged_file = lofty::read_from_path(file_path)
-        .map_err(|e| format!("Failed to read audio file for tagging: {}", e))?;
+        .map_err(|e| format!("Failed to read '{}' for tagging: {}", path, e))?;
 
     let tag_type = tagged_file.primary_tag_type();
-    let tag = match tagged_file.tag_mut(tag_type) {
-        Some(t) => t,
-        None => {
-            tagged_file.insert_tag(Tag::new(tag_type));
-            tagged_file.tag_mut(tag_type).unwrap()
-        }
-    };
+    if tagged_file.tag_mut(tag_type).is_none() {
+        tagged_file.insert_tag(Tag::new(tag_type));
+    }
+    let tag = tagged_file
+        .tag_mut(tag_type)
+        .ok_or_else(|| "Could not create a tag container".to_string())?;
 
     // Standard Tags
-    if let Some(title) = metadata.title { tag.set_title(title); }
-    if let Some(artist) = metadata.artist { tag.set_artist(artist); }
-    if let Some(album) = metadata.album { tag.set_album(album); }
-    if let Some(year) = metadata.year { tag.set_year(year); }
-    if let Some(track) = metadata.track_number { tag.set_track(track); }
-    if let Some(total) = metadata.total_tracks { tag.set_track_total(total); }
-    if let Some(disc) = metadata.disc_number { tag.set_disk(disc); }
-    if let Some(genre) = metadata.genre { tag.set_genre(genre); }
-    if let Some(comment) = metadata.comment { tag.set_comment(comment); }
-    if let Some(composer) = metadata.composer {
-        tag.insert_text(ItemKey::Composer, composer);
+    if let Some(ref v) = metadata.title {
+        tag.set_title(v.clone());
+    }
+    if let Some(ref v) = metadata.artist {
+        tag.set_artist(v.clone());
+    }
+    if let Some(ref v) = metadata.album {
+        tag.set_album(v.clone());
+    }
+    if let Some(v) = metadata.year {
+        tag.set_year(v);
+    }
+    if let Some(v) = metadata.track_number {
+        tag.set_track(v);
+    }
+    if let Some(v) = metadata.total_tracks {
+        tag.set_track_total(v);
+    }
+    if let Some(v) = metadata.disc_number {
+        tag.set_disk(v);
+    }
+    if let Some(ref v) = metadata.genre {
+        tag.set_genre(v.clone());
+    }
+    if let Some(ref v) = metadata.comment {
+        tag.set_comment(v.clone());
+    }
+    if let Some(ref v) = metadata.composer {
+        tag.insert_text(ItemKey::Composer, v.clone());
     }
 
     // Extended Tags
-    if let Some(isrc) = metadata.isrc { tag.insert_text(ItemKey::Isrc, isrc); }
-    if let Some(bpm) = metadata.bpm { tag.insert_text(ItemKey::Bpm, bpm.to_string()); }
-    if let Some(key) = metadata.key { tag.insert_text(ItemKey::InitialKey, key); }
-    if let Some(lyrics) = metadata.lyrics { tag.insert_text(ItemKey::Lyrics, lyrics); }
-    if let Some(copyright) = metadata.copyright { tag.insert_text(ItemKey::CopyrightMessage, copyright); }
-    if let Some(publisher) = metadata.publisher { tag.insert_text(ItemKey::Publisher, publisher); }
-    if let Some(encoder) = metadata.encoder { tag.insert_text(ItemKey::EncodedBy, encoder); }
+    if let Some(ref v) = metadata.isrc {
+        tag.insert_text(ItemKey::Isrc, v.clone());
+    }
+    if let Some(v) = metadata.bpm {
+        tag.insert_text(ItemKey::Bpm, v.to_string());
+    }
+    if let Some(ref v) = metadata.key {
+        tag.insert_text(ItemKey::InitialKey, v.clone());
+    }
+    if let Some(ref v) = metadata.lyrics {
+        tag.insert_text(ItemKey::Lyrics, v.clone());
+    }
+    if let Some(ref v) = metadata.copyright {
+        tag.insert_text(ItemKey::CopyrightMessage, v.clone());
+    }
+    if let Some(ref v) = metadata.publisher {
+        tag.insert_text(ItemKey::Publisher, v.clone());
+    }
+    if let Some(ref v) = metadata.encoder {
+        tag.insert_text(ItemKey::EncodedBy, v.clone());
+    }
 
     // Cover Artwork
-    if let Some(base64_data) = metadata.cover_art_base64 {
-        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(base64_data) {
+    if let Some(ref b64) = metadata.cover_art_base64 {
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
             let mime = match metadata.cover_art_mime.as_deref() {
                 Some("image/png") => MimeType::Png,
                 _ => MimeType::Jpeg,
             };
-            let pic = Picture::new_unchecked(
-                PictureType::CoverFront,
-                Some(mime),
-                None,
-                bytes,
-            );
+            let pic = Picture::new_unchecked(PictureType::CoverFront, Some(mime), None, bytes);
             tag.set_picture(0, pic);
         }
     }
 
-    tagged_file.save_to_path(file_path, WriteOptions::default())
-        .map_err(|e| format!("Failed to write metadata tags: {}", e))?;
+    tagged_file
+        .save_to_path(file_path, WriteOptions::default())
+        .map_err(|e| format!("Failed to write tags to '{}': {}", path, e))?;
 
     Ok(())
 }
 
-/// Decode audio using `symphonia` and compute min/max downsampled waveform peaks for rapid UI rendering.
+// ---------------------------------------------------------------------------
+// Dither
+// ---------------------------------------------------------------------------
+
+/// Fast xorshift PRNG returning a uniform value in [-0.5, 0.5].
+fn xorshift_unit(state: &mut u32) -> f32 {
+    *state ^= *state << 13;
+    *state ^= *state >> 17;
+    *state ^= *state << 5;
+    (*state as f32 / u32::MAX as f32) - 0.5
+}
+
+/// Triangular PDF dither: the sum of two uniform values, scaled to one LSB.
+fn tpdf_noise(state: &mut u32, lsb: f32) -> f32 {
+    (xorshift_unit(state) + xorshift_unit(state)) * lsb
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
 #[tauri::command]
-pub async fn generate_waveform_peaks(
-    path: String,
-    samples_per_pixel: u32,
-) -> Result<WaveformPeaks, String> {
+pub async fn load_audio_metadata(path: String) -> Result<MetadataDto, String> {
+    if !Path::new(&path).exists() {
+        return Err(format!("File not found: {}", path));
+    }
+    tokio::task::spawn_blocking(move || Ok(read_tags(&path)))
+        .await
+        .map_err(|e| format!("Task join failure: {}", e))?
+}
+
+#[tauri::command]
+pub async fn save_audio_metadata(path: String, metadata: MetadataDto) -> Result<(), String> {
+    if !Path::new(&path).exists() {
+        return Err(format!("Audio file does not exist: {}", path));
+    }
+    tokio::task::spawn_blocking(move || write_tags(&path, &metadata))
+        .await
+        .map_err(|e| format!("Task join failure: {}", e))?
+}
+
+/// Decode a file once and return everything the audio pool needs: duration,
+/// stream properties, an absolute-value peak envelope, and embedded tags.
+#[tauri::command]
+pub async fn analyze_audio_file(path: String, peak_buckets: u32) -> Result<AudioFileInfo, String> {
     tokio::task::spawn_blocking(move || {
-        let file = File::open(&path).map_err(|e| format!("Cannot open file: {}", e))?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        let file_path = Path::new(&path);
+        if !file_path.exists() {
+            return Err(format!("File not found: {}", path));
+        }
 
-        let hint = Hint::new();
-        let probed = symphonia::default::get_probe()
-            .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
-            .map_err(|e| format!("Unsupported format or corrupt audio: {}", e))?;
+        let size_bytes = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
+        let name = file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("untitled")
+            .to_string();
+        let format = file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("WAV")
+            .to_uppercase();
 
-        let mut format = probed.format;
-        let track = format.default_track().ok_or_else(|| "No default audio track".to_string())?;
+        let audio = decode_file(&path)?;
+        let frames = audio.frames();
+        let buckets = peak_buckets.clamp(64, 8192) as usize;
+        let per_bucket = (frames / buckets).max(1);
 
-        let mut decoder = symphonia::default::get_codecs()
-            .make(&track.codec_params, &DecoderOptions::default())
-            .map_err(|e| format!("Decoder initialization failed: {}", e))?;
-
-        let track_id = track.id;
-        let sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
-        let channels = track.codec_params.channels.map(|c| c.count() as u16).unwrap_or(2);
-
-        let spp = samples_per_pixel.max(64) as usize;
-        let mut min_peaks = Vec::new();
-        let mut max_peaks = Vec::new();
-        let mut current_min = 1.0_f32;
-        let mut current_max = -1.0_f32;
-        let mut sample_count = 0usize;
-        let mut total_frames = 0u64;
-
-        let mut sample_buf: Option<SampleBuffer<f32>> = None;
-
-        while let Ok(packet) = format.next_packet() {
-            if packet.track_id() != track_id {
-                continue;
-            }
-
-            match decoder.decode(&packet) {
-                Ok(decoded) => {
-                    if sample_buf.is_none() {
-                        let spec = *decoded.spec();
-                        let duration = decoded.capacity() as u64;
-                        sample_buf = Some(SampleBuffer::new(duration, spec));
-                    }
-
-                    if let Some(buf) = sample_buf.as_mut() {
-                        buf.copy_interleaved_ref(decoded);
-                        let samples = buf.samples();
-                        let frames = samples.len() / (channels as usize);
-                        total_frames += frames as u64;
-
-                        for f in 0..frames {
-                            // Downmix stereo to mono for timeline peak representation
-                            let mono_sample = if channels >= 2 {
-                                0.5 * (samples[f * (channels as usize)] + samples[f * (channels as usize) + 1])
-                            } else {
-                                samples[f]
-                            };
-
-                            if mono_sample < current_min { current_min = mono_sample; }
-                            if mono_sample > current_max { current_max = mono_sample; }
-                            sample_count += 1;
-
-                            if sample_count >= spp {
-                                min_peaks.push(current_min);
-                                max_peaks.push(current_max);
-                                current_min = 1.0;
-                                current_max = -1.0;
-                                sample_count = 0;
-                            }
-                        }
-                    }
+        let mut peaks: Vec<f32> = Vec::with_capacity(buckets);
+        let mut idx = 0usize;
+        while idx < frames {
+            let end = (idx + per_bucket).min(frames);
+            let mut peak = 0.0_f32;
+            for f in idx..end {
+                let mono = 0.5 * (audio.left[f] + audio.right[f]);
+                let a = mono.abs();
+                if a > peak {
+                    peak = a;
                 }
-                Err(SymphoniaError::IoError(_)) => break,
-                Err(SymphoniaError::DecodeError(_)) => continue,
-                Err(e) => return Err(format!("Error while decoding: {}", e)),
             }
+            peaks.push(peak.min(1.0));
+            idx = end;
         }
 
-        if sample_count > 0 {
-            min_peaks.push(current_min);
-            max_peaks.push(current_max);
-        }
-
-        let duration_ms = (total_frames as f64 / sample_rate as f64) * 1000.0;
-
-        Ok(WaveformPeaks {
-            min_peaks,
-            max_peaks,
-            duration_ms,
-            sample_rate,
-            channels,
+        Ok(AudioFileInfo {
+            path: path.clone(),
+            name,
+            format,
+            duration_ms: audio.duration_ms(),
+            sample_rate: audio.sample_rate,
+            channels: audio.channels,
+            size_bytes,
+            peaks,
+            metadata: read_tags(&path),
         })
     })
     .await
     .map_err(|e| format!("Task join failure: {}", e))?
 }
 
-/// Composite project clips, render through Master DSP Mastering chain, and export mixdown to disk.
+/// Min/max peak pairs, kept for callers that need a symmetric envelope.
 #[tauri::command]
-pub async fn export_project(project: ProjectState, export_path: String) -> Result<String, String> {
+pub async fn generate_waveform_peaks(
+    path: String,
+    samples_per_pixel: u32,
+) -> Result<WaveformPeaks, String> {
     tokio::task::spawn_blocking(move || {
-        let sample_rate = project.sample_rate.max(44100);
+        let audio = decode_file(&path)?;
+        let spp = samples_per_pixel.max(64) as usize;
+        let frames = audio.frames();
 
-        // 1. Determine total duration of timeline in milliseconds
+        let mut min_peaks = Vec::with_capacity(frames / spp + 1);
+        let mut max_peaks = Vec::with_capacity(frames / spp + 1);
+
+        let mut idx = 0usize;
+        while idx < frames {
+            let end = (idx + spp).min(frames);
+            let mut lo = 1.0_f32;
+            let mut hi = -1.0_f32;
+            for f in idx..end {
+                let mono = 0.5 * (audio.left[f] + audio.right[f]);
+                if mono < lo {
+                    lo = mono;
+                }
+                if mono > hi {
+                    hi = mono;
+                }
+            }
+            min_peaks.push(lo);
+            max_peaks.push(hi);
+            idx = end;
+        }
+
+        Ok(WaveformPeaks {
+            duration_ms: audio.duration_ms(),
+            sample_rate: audio.sample_rate,
+            channels: audio.channels,
+            min_peaks,
+            max_peaks,
+        })
+    })
+    .await
+    .map_err(|e| format!("Task join failure: {}", e))?
+}
+
+/// Stream raw file bytes to the webview as binary so the frontend can decode
+/// them with Web Audio for preview playback.
+#[tauri::command]
+pub async fn read_audio_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = tokio::task::spawn_blocking(move || {
+        std::fs::read(&path).map_err(|e| format!("Cannot read '{}': {}", path, e))
+    })
+    .await
+    .map_err(|e| format!("Task join failure: {}", e))??;
+
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
+pub fn read_text_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| format!("Cannot read '{}': {}", path, e))
+}
+
+#[tauri::command]
+pub fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    if let Some(parent) = Path::new(&path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Cannot create folder for '{}': {}", path, e))?;
+    }
+    std::fs::write(&path, contents).map_err(|e| format!("Cannot write '{}': {}", path, e))
+}
+
+/// Composite every clip from its real source audio, run the master DSP chain,
+/// and write a WAV mixdown with the project's metadata embedded.
+#[tauri::command]
+pub async fn export_project(
+    project: ProjectState,
+    options: ExportOptions,
+) -> Result<ExportResult, String> {
+    tokio::task::spawn_blocking(move || {
+        let sample_rate = if project.sample_rate >= 8000 {
+            project.sample_rate
+        } else {
+            44100
+        };
+
+        if project.clips.is_empty() {
+            return Err("Nothing to export: the timeline has no clips.".to_string());
+        }
+
+        // 1. Decode each distinct source exactly once, conformed to the project rate.
+        let mut cache: HashMap<String, DecodedAudio> = HashMap::new();
+        for clip in &project.clips {
+            if cache.contains_key(&clip.source_path) {
+                continue;
+            }
+            if !Path::new(&clip.source_path).exists() {
+                return Err(format!(
+                    "Missing source file for clip '{}': {}",
+                    clip.name, clip.source_path
+                ));
+            }
+            let decoded = conform_to_rate(decode_file(&clip.source_path)?, sample_rate);
+            cache.insert(clip.source_path.clone(), decoded);
+        }
+
+        // 2. Size the mix buffer from the last clip end, plus a short tail.
         let mut total_duration_ms: f64 = 0.0;
         for clip in &project.clips {
             let end_ms = clip.start_time_ms + clip.duration_ms;
@@ -252,142 +523,218 @@ pub async fn export_project(project: ProjectState, export_path: String) -> Resul
                 total_duration_ms = end_ms;
             }
         }
-
         if total_duration_ms <= 0.0 {
-            return Err("Project timeline has no clips or duration is zero.".to_string());
+            return Err("Project timeline duration is zero.".to_string());
         }
+        total_duration_ms += 250.0;
 
-        // Add 500ms tail for reverb/delay/fade safety
-        total_duration_ms += 500.0;
-        let total_frames = ((total_duration_ms * 0.001) * sample_rate as f64) as usize;
-        let mut mix_buffer_l = vec![0.0_f32; total_frames];
-        let mut mix_buffer_r = vec![0.0_f32; total_frames];
+        let total_frames = ((total_duration_ms * 0.001) * sample_rate as f64).ceil() as usize;
+        let mut mix_l = vec![0.0_f32; total_frames];
+        let mut mix_r = vec![0.0_f32; total_frames];
 
-        // 2. Composite all active tracks and non-destructive clips
+        let has_solo = project.tracks.iter().any(|t| t.solo);
+
+        // 3. Sum every clip into the mix bus.
         for clip in &project.clips {
-            // Find track settings
             let track = project.tracks.get(clip.track_index);
-            let (is_muted, track_vol, track_pan) = match track {
-                Some(t) => (t.muted, t.volume, t.pan),
-                None => (false, 1.0, 0.0),
+            let (muted, solo, track_vol, track_pan) = match track {
+                Some(t) => (t.muted, t.solo, t.volume, t.pan),
+                None => (false, false, 1.0, 0.0),
             };
 
-            if is_muted {
+            if muted || (has_solo && !solo) {
                 continue;
             }
 
-            let start_frame = ((clip.start_time_ms * 0.001) * sample_rate as f64) as usize;
-            let duration_frames = ((clip.duration_ms * 0.001) * sample_rate as f64) as usize;
-            let fade_in_frames = ((clip.fade_in_ms * 0.001) * sample_rate as f64) as usize;
-            let fade_out_frames = ((clip.fade_out_ms * 0.001) * sample_rate as f64) as usize;
+            let source = match cache.get(&clip.source_path) {
+                Some(s) => s,
+                None => continue,
+            };
+            let src_frames = source.frames();
 
-            let pan_l = ((1.0 - track_pan) * 0.5).clamp(0.0, 1.0);
-            let pan_r = ((1.0 + track_pan) * 0.5).clamp(0.0, 1.0);
+            let start_frame = ((clip.start_time_ms * 0.001) * sample_rate as f64).round() as usize;
+            let offset_frame = ((clip.offset_ms * 0.001) * sample_rate as f64).round() as usize;
+            let duration_frames =
+                ((clip.duration_ms * 0.001) * sample_rate as f64).round() as usize;
+            let fade_in_frames = ((clip.fade_in_ms * 0.001) * sample_rate as f64).round() as usize;
+            let fade_out_frames =
+                ((clip.fade_out_ms * 0.001) * sample_rate as f64).round() as usize;
 
-            // Decode source clip samples using Symphonia or synthesize if path doesn't exist
-            // For robust sample-accurate composition:
-            let clip_gain = clip.gain * track_vol;
+            // Equal-power pan keeps a centred track at unity perceived loudness.
+            let pan = track_pan.clamp(-1.0, 1.0);
+            let angle = (pan + 1.0) * (std::f32::consts::FRAC_PI_4);
+            let pan_l = angle.cos();
+            let pan_r = angle.sin();
+
+            let gain = clip.gain * track_vol;
 
             for f in 0..duration_frames {
                 let target_idx = start_frame + f;
                 if target_idx >= total_frames {
                     break;
                 }
+                let src_idx = offset_frame + f;
+                // Past the end of the source the clip is silent; it does not loop.
+                if src_idx >= src_frames {
+                    break;
+                }
 
-                // Envelope computation: Equal-power or linear fade
-                let mut fade_factor = 1.0_f32;
+                let mut fade = 1.0_f32;
                 if fade_in_frames > 0 && f < fade_in_frames {
-                    fade_factor *= (f as f32 / fade_in_frames as f32).sin();
+                    let p = f as f32 / fade_in_frames as f32;
+                    fade *= (p * std::f32::consts::FRAC_PI_2).sin();
                 }
-                if fade_out_frames > 0 && f >= (duration_frames - fade_out_frames) {
-                    let out_progress = (duration_frames - f) as f32 / fade_out_frames as f32;
-                    fade_factor *= out_progress.clamp(0.0, 1.0);
+                if fade_out_frames > 0 && duration_frames > f && f >= duration_frames.saturating_sub(fade_out_frames) {
+                    let p = (duration_frames - f) as f32 / fade_out_frames as f32;
+                    fade *= (p.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2).sin();
                 }
 
-                // Synthesized carrier / clip sample scaled by gain and pan
-                let sample_val = 0.4 * fade_factor * clip_gain;
-                mix_buffer_l[target_idx] += sample_val * pan_l;
-                mix_buffer_r[target_idx] += sample_val * pan_r;
+                let amp = gain * fade;
+                mix_l[target_idx] += source.left[src_idx] * amp * pan_l;
+                mix_r[target_idx] += source.right[src_idx] * amp * pan_r;
             }
         }
 
-        // 3. Interleave stereo samples [L0, R0, L1, R1, ...]
+        // 4. Interleave and run the master chain.
         let mut interleaved = Vec::with_capacity(total_frames * 2);
         for i in 0..total_frames {
-            interleaved.push(mix_buffer_l[i]);
-            interleaved.push(mix_buffer_r[i]);
+            interleaved.push(mix_l[i]);
+            interleaved.push(mix_r[i]);
         }
 
-        // 4. Run through Master DSP Mastering Engine
         let mut dsp_chain = MasterDspChain::new(sample_rate as f32, &project.master_dsp);
         dsp_chain.process_interleaved(&mut interleaved);
 
-        // 5. Target LUFS normalization if requested (target -14.0 LUFS standard)
+        // 5. Optional loudness match to the project target.
         let measured_lufs = dsp_chain.get_lufs();
-        if measured_lufs > -60.0 {
-            let lufs_diff = project.master_dsp.target_lufs - measured_lufs;
-            let norm_gain = 10.0_f32.powf((lufs_diff.clamp(-12.0, 12.0)) / 20.0);
+        if options.normalize_to_target_lufs && measured_lufs > -60.0 {
+            let diff = project.master_dsp.target_lufs - measured_lufs;
+            let norm_gain = 10.0_f32.powf(diff.clamp(-12.0, 12.0) / 20.0);
+            let ceiling = 10.0_f32.powf(project.master_dsp.limiter_ceiling_db / 20.0);
             for s in interleaved.iter_mut() {
-                *s = (*s * norm_gain).clamp(-1.0, 1.0);
+                *s = (*s * norm_gain).clamp(-ceiling, ceiling);
             }
         }
 
-        // 6. Write final audio mixdown via `hound` (WAV 24-bit PCM)
-        let spec = hound::WavSpec {
-            channels: 2,
-            sample_rate,
-            bits_per_sample: 24,
-            sample_format: hound::SampleFormat::Int,
+        let mut peak = 0.0_f32;
+        for s in interleaved.iter() {
+            let a = s.abs();
+            if a > peak {
+                peak = a;
+            }
+        }
+        let peak_db = if peak > 1e-6 {
+            20.0 * peak.log10()
+        } else {
+            -100.0
         };
 
-        let out_path = Path::new(&export_path);
+        // 6. Write the WAV.
+        let out_path = Path::new(&options.export_path);
         if let Some(parent) = out_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Cannot create export folder: {}", e))?;
         }
 
-        let mut writer = hound::WavWriter::create(&export_path, spec)
-            .map_err(|e| format!("Failed to create WAV writer: {}", e))?;
+        let format = options.format.as_str();
+        let spec = match format {
+            "wav_16" => hound::WavSpec {
+                channels: 2,
+                sample_rate,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+            "wav_32f" => hound::WavSpec {
+                channels: 2,
+                sample_rate,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+            "wav_24" => hound::WavSpec {
+                channels: 2,
+                sample_rate,
+                bits_per_sample: 24,
+                sample_format: hound::SampleFormat::Int,
+            },
+            other => {
+                return Err(format!(
+                    "Export format '{}' is not supported yet. Choose a WAV format.",
+                    other
+                ))
+            }
+        };
 
-        for sample in &interleaved {
-            // Convert f32 [-1.0, 1.0] to 24-bit signed integer [-8388608, 8388607]
-            let sample_24 = (sample.clamp(-1.0, 1.0) * 8388607.0) as i32;
-            writer.write_sample(sample_24)
-                .map_err(|e| format!("WAV write sample error: {}", e))?;
+        let mut writer = hound::WavWriter::create(&options.export_path, spec)
+            .map_err(|e| format!("Failed to create WAV file: {}", e))?;
+
+        // TPDF dither state (see `tpdf_noise` below).
+        let mut rng_state: u32 = 0x2545_F491;
+
+        match format {
+            "wav_32f" => {
+                for s in &interleaved {
+                    writer
+                        .write_sample(*s)
+                        .map_err(|e| format!("WAV write error: {}", e))?;
+                }
+            }
+            "wav_16" => {
+                let lsb = 1.0 / 32767.0;
+                for s in &interleaved {
+                    let dithered = if options.dither {
+                        *s + tpdf_noise(&mut rng_state, lsb)
+                    } else {
+                        *s
+                    };
+                    let v = (dithered.clamp(-1.0, 1.0) * 32767.0).round() as i32;
+                    writer
+                        .write_sample(v as i16)
+                        .map_err(|e| format!("WAV write error: {}", e))?;
+                }
+            }
+            _ => {
+                let lsb = 1.0 / 8_388_607.0;
+                for s in &interleaved {
+                    let dithered = if options.dither {
+                        *s + tpdf_noise(&mut rng_state, lsb)
+                    } else {
+                        *s
+                    };
+                    let v = (dithered.clamp(-1.0, 1.0) * 8_388_607.0).round() as i32;
+                    writer
+                        .write_sample(v)
+                        .map_err(|e| format!("WAV write error: {}", e))?;
+                }
+            }
         }
 
-        writer.finalize().map_err(|e| format!("WAV finalize error: {}", e))?;
+        writer
+            .finalize()
+            .map_err(|e| format!("WAV finalize error: {}", e))?;
 
-        // 7. Embed Master Metadata Tags into exported file
-        let _ = save_audio_metadata_internal(&export_path, &project.metadata);
+        // 7. Embed the project's metadata into the finished file.
+        // A tagging failure should not discard a good render, so it is reported
+        // in the message rather than returned as an error.
+        let tag_note = match write_tags(&options.export_path, &project.metadata) {
+            Ok(()) => String::new(),
+            Err(e) => format!(" (metadata could not be embedded: {})", e),
+        };
 
-        Ok(format!("Successfully exported master audio to {}", export_path))
+        Ok(ExportResult {
+            path: options.export_path.clone(),
+            duration_ms: total_duration_ms,
+            measured_lufs,
+            peak_db,
+            sample_rate,
+            format: options.format.clone(),
+            message: format!(
+                "Exported {:.1}s mixdown at {} kHz{}",
+                total_duration_ms / 1000.0,
+                sample_rate as f64 / 1000.0,
+                tag_note
+            ),
+        })
     })
     .await
-    .map_err(|e| format!("Export task execution failure: {}", e))?
-}
-
-fn save_audio_metadata_internal(path: &str, metadata: &MetadataDto) -> Result<(), String> {
-    let file_path = Path::new(path);
-    if let Ok(mut tagged_file) = lofty::read_from_path(file_path) {
-        let tag_type = tagged_file.primary_tag_type();
-        let tag = match tagged_file.tag_mut(tag_type) {
-            Some(t) => t,
-            None => {
-                tagged_file.insert_tag(Tag::new(tag_type));
-                tagged_file.tag_mut(tag_type).unwrap()
-            }
-        };
-
-        if let Some(ref t) = metadata.title { tag.set_title(t.clone()); }
-        if let Some(ref a) = metadata.artist { tag.set_artist(a.clone()); }
-        if let Some(ref alb) = metadata.album { tag.set_album(alb.clone()); }
-        if let Some(y) = metadata.year { tag.set_year(y); }
-        if let Some(ref g) = metadata.genre { tag.set_genre(g.clone()); }
-        if let Some(ref c) = metadata.comment { tag.set_comment(c.clone()); }
-        if let Some(ref comp) = metadata.composer { tag.insert_text(ItemKey::Composer, comp.clone()); }
-        if let Some(ref isrc) = metadata.isrc { tag.insert_text(ItemKey::Isrc, isrc.clone()); }
-
-        let _ = tagged_file.save_to_path(file_path, WriteOptions::default());
-    }
-    Ok(())
+    .map_err(|e| format!("Export task failure: {}", e))?
 }

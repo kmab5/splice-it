@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { ClipState, TrackState } from '../types/project';
 import { getNonOverlappingStartTime, getNonOverlappingTrimBounds } from '../utils/clipCollisions';
 import { hexToRgba } from '../utils/trackColors';
-import { getPlayheadSnapTime, SnapResult } from '../utils/timelineSnap';
+import { SnapResult } from '../utils/timelineSnap';
 
 interface TimelineCanvasProps {
   tracks: TrackState[];
@@ -14,6 +14,8 @@ interface TimelineCanvasProps {
   snapToGrid: boolean;
   bpm: number;
   canvasWidth: number;
+  /** Real peak envelopes keyed by clip.source_path, produced by the Rust analyzer. */
+  sourceWaveforms?: Record<string, { peaks: number[]; durationMs: number }>;
   onSelectClip: (clipId: string | null) => void;
   onSelectTrack: (trackIndex: number | null) => void;
   onUpdateClip: (clipId: string, updates: Partial<ClipState>) => void;
@@ -50,6 +52,7 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
   snapToGrid,
   bpm,
   canvasWidth,
+  sourceWaveforms = {},
   onSelectClip,
   onSelectTrack,
   onUpdateClip,
@@ -220,22 +223,42 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
       ctx.lineTo(clipX + clipW, midY);
       ctx.stroke();
 
-      // Draw peaks
+      // Draw peaks from the decoded source. The slice of the envelope shown
+      // follows the clip's trim offset and duration, so trimming and splitting
+      // reveal the correct part of the waveform.
       const numPoints = Math.max(16, Math.floor(clipW / 2));
       const peakGrad = ctx.createLinearGradient(clipX, waveY, clipX, waveY + waveH);
       peakGrad.addColorStop(0, hexToRgba(trackColor, 0.95));
       peakGrad.addColorStop(0.5, trackColor);
       peakGrad.addColorStop(1, hexToRgba(trackColor, 0.7));
 
-      ctx.fillStyle = peakGrad;
-      for (let p = 0; p < numPoints; p++) {
-        const px = clipX + (p / numPoints) * clipW;
-        const seed = (p + clip.track_index * 13) * 0.2;
-        const normPeak = Math.sin(seed * 2) * 0.4 + Math.cos(seed * 5) * 0.3 + 0.3;
-        const amp = Math.min(1.0, Math.max(0.1, normPeak * clip.gain));
-        const ph = amp * (waveH / 2) * 0.85;
+      const wave = sourceWaveforms[clip.source_path];
 
-        ctx.fillRect(px, midY - ph, 1.5, ph * 2);
+      if (wave && wave.peaks.length > 0 && wave.durationMs > 0) {
+        ctx.fillStyle = peakGrad;
+        const peaks = wave.peaks;
+        const startFrac = clip.offset_ms / wave.durationMs;
+        const spanFrac = clip.duration_ms / wave.durationMs;
+
+        for (let p = 0; p < numPoints; p++) {
+          const frac = startFrac + (p / numPoints) * spanFrac;
+          if (frac < 0 || frac >= 1) continue; // past the end of the source
+          const idx = Math.min(peaks.length - 1, Math.floor(frac * peaks.length));
+          const amp = Math.min(1, Math.max(0, peaks[idx] * clip.gain));
+          const ph = Math.max(0.5, amp * (waveH / 2) * 0.92);
+          ctx.fillRect(clipX + (p / numPoints) * clipW, midY - ph, 1.5, ph * 2);
+        }
+      } else {
+        // Source not analyzed (or missing): show a flat placeholder rather than
+        // inventing a waveform that implies audio is present.
+        ctx.strokeStyle = hexToRgba(trackColor, 0.35);
+        ctx.setLineDash([3, 3]);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(clipX + 2, midY);
+        ctx.lineTo(clipX + clipW - 2, midY);
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
 
       // Clipping Warning Banner if gain is high
@@ -403,6 +426,7 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
     bpm,
     maxTimeSec,
     playheadSnapInfo,
+    sourceWaveforms,
   ]);
 
   // Pointer Interaction Handling:
