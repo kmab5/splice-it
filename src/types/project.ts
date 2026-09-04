@@ -115,6 +115,13 @@ export interface ProjectState {
   master_dsp: MasterDspSettings;
   metadata: MetadataDto;
   audio_pool?: SourceAudioFile[];
+  /**
+   * Concat workspace state, saved alongside the timeline so one .sic document
+   * carries both modes. The Rust exporter ignores this field.
+   */
+  concat?: ConcatState;
+  /** App version that last wrote this document, for future migrations. */
+  app_version?: string;
 }
 
 export interface WaveformPeaks {
@@ -184,3 +191,24 @@ export interface ConcatRequest {
   apply_master_chain: boolean;
   master_dsp: MasterDspSettings;
 }
+
+// ---------------------------------------------------------------------------
+// Application settings (app-level, not part of a project document)
+// ---------------------------------------------------------------------------
+
+export interface AppSettings {
+  autoSaveEnabled: boolean;
+  /** Minutes between auto-saves. */
+  autoSaveMinutes: number;
+  /** Warn before closing with unsaved changes. */
+  confirmOnDiscard: boolean;
+  /** Default sample rate offered for new concat lists. */
+  defaultSampleRate: number;
+}
+
+export const DEFAULT_APP_SETTINGS: AppSettings = {
+  autoSaveEnabled: true,
+  autoSaveMinutes: 5,
+  confirmOnDiscard: true,
+  defaultSampleRate: 44100,
+};

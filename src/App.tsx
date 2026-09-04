@@ -9,6 +9,7 @@ import {
   ConcatItem,
   ConcatState,
   ExportOptions,
+  AppSettings,
 } from './types/project';
 import { audioEngine } from './services/audioEngine';
 import {
@@ -36,6 +37,9 @@ import { RightSidebar } from './components/RightSidebar';
 import { ContextMenu, ContextMenuTarget } from './components/ContextMenu';
 import { TrackColorPicker } from './components/TrackColorPicker';
 import { ConcatWorkspace, computeLayout } from './components/ConcatWorkspace';
+import { SettingsModal } from './components/SettingsModal';
+import { loadSettings, saveSettings } from './services/settings';
+import { APP_VERSION, PROJECT_FORMAT_VERSION } from './version';
 import type { WorkspaceMode } from './components/TopNavbar';
 import { getNonOverlappingStartTime } from './utils/clipCollisions';
 import { getRandomTrackColor } from './utils/trackColors';
@@ -156,7 +160,7 @@ export default function App() {
 
   const [concat, setConcat] = useState<ConcatState>({
     name: 'Joined Audio',
-    sample_rate: 44100,
+    sample_rate: loadSettings().defaultSampleRate,
     items: [],
     metadata: {},
     apply_master_chain: false,
@@ -166,6 +170,60 @@ export default function App() {
   const [concatTimeMs, setConcatTimeMs] = useState<number>(0);
   const [isConcatExportOpen, setIsConcatExportOpen] = useState<boolean>(false);
   const [monitorBypass, setMonitorBypass] = useState<boolean>(false);
+  const [concatDockHeight, setConcatDockHeight] = useState<number>(220);
+
+  // App settings live outside the project document.
+  const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [lastAutoSaveAt, setLastAutoSaveAt] = useState<number | null>(null);
+
+  const updateSettings = useCallback((updates: Partial<AppSettings>) => {
+    setSettings((prev) => {
+      const next = { ...prev, ...updates };
+      saveSettings(next);
+      return next;
+    });
+  }, []);
+
+  // Unsaved-changes tracking.
+  //
+  // Comparing against a snapshot of what was last written is more reliable than
+  // a "something changed" flag: saving updates the project name, which would
+  // otherwise immediately re-dirty the document it just saved. Waveform peaks
+  // are excluded from the signature since they are large and derived.
+  const [isDirty, setIsDirty] = useState<boolean>(false);
+  const savedSignatureRef = useRef<string>('');
+
+  const dirtySignature = useCallback((p: ProjectState, c: ConcatState): string => {
+    const pool = (p.audio_pool || []).map(({ waveform_peaks, ...rest }) => rest);
+    return JSON.stringify({ ...p, audio_pool: pool, concat: c });
+  }, []);
+
+  useEffect(() => {
+    setIsDirty(dirtySignature(project, concat) !== savedSignatureRef.current);
+  }, [project, concat, dirtySignature]);
+
+  /** Called after a successful save or load: this is now the on-disk state. */
+  const markClean = useCallback(
+    (p: ProjectState, c: ConcatState) => {
+      savedSignatureRef.current = dirtySignature(p, c);
+      setIsDirty(false);
+    },
+    [dirtySignature]
+  );
+
+  // A brand new project is not "unsaved work" until it is edited.
+  useEffect(() => {
+    savedSignatureRef.current = dirtySignature(INITIAL_PROJECT, {
+      name: 'Joined Audio',
+      sample_rate: 44100,
+      items: [],
+      metadata: {},
+      apply_master_chain: false,
+    });
+    // Runs once, deliberately.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Track colour picker state
   const [colorPicker, setColorPicker] = useState<{
@@ -604,37 +662,75 @@ export default function App() {
     }
   };
 
-  const handleSaveProject = useCallback(async () => {
-    const json = JSON.stringify(project, null, 2);
-    const defaultName = `${project.name.replace(/\s+/g, '_')}.sic`;
+  /** The document written to disk: both workspaces in one .sic file. */
+  const buildDocument = useCallback(
+    (): ProjectState => ({
+      ...project,
+      version: PROJECT_FORMAT_VERSION,
+      app_version: APP_VERSION,
+      concat,
+    }),
+    [project, concat]
+  );
 
-    if (isTauri()) {
-      const path = await pickSavePath(defaultName, ['sic'], 'Save Splice It project');
-      if (!path) return;
-      try {
-        await writeTextFile(path, json);
-        // The title bar used to keep saying "Untitled Project" after a save,
-        // because nothing ever fed the chosen filename back into state.
-        const baseName = (path.split(/[\\/]/).pop() || defaultName).replace(/\.sic$/i, '');
-        setProject((prev) => ({ ...prev, name: baseName }));
-        setSavedPath(path);
-      } catch (err) {
-        window.alert(`Could not save project: ${err instanceof Error ? err.message : String(err)}`);
+  /**
+   * Save the project.
+   *
+   * Once a path is known, Ctrl+S writes straight to it. The save dialog only
+   * appears for a project that has never been saved, or for an explicit
+   * Save As. Previously every save re-prompted for a location.
+   */
+  const handleSaveProject = useCallback(
+    async (options?: { saveAs?: boolean; silent?: boolean }): Promise<boolean> => {
+      const saveAs = options?.saveAs ?? false;
+      const json = JSON.stringify(buildDocument(), null, 2);
+      const defaultName = `${project.name.replace(/\s+/g, '_')}.sic`;
+
+      if (isTauri()) {
+        let path = savedPath;
+
+        if (!path || saveAs) {
+          path = await pickSavePath(
+            defaultName,
+            ['sic'],
+            saveAs ? 'Save project as' : 'Save Splice It project'
+          );
+          if (!path) return false;
+        }
+
+        try {
+          await writeTextFile(path, json);
+          const baseName = (path.split(/[\\/]/).pop() || defaultName).replace(/\.sic$/i, '');
+          const savedProject: ProjectState = { ...project, name: baseName };
+          setProject(savedProject);
+          setSavedPath(path);
+          markClean(savedProject, concat);
+          return true;
+        } catch (err) {
+          if (!options?.silent) {
+            window.alert(
+              `Could not save project: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
+          return false;
+        }
       }
-      return;
-    }
 
-    // Browser fallback: download the .sic document.
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = defaultName;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, [project]);
+      // Browser fallback: download the document.
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = defaultName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      markClean(project, concat);
+      return true;
+    },
+    [buildDocument, project, concat, savedPath, markClean]
+  );
 
   /**
    * Re-decode every source referenced by a loaded project so playback and
@@ -672,9 +768,15 @@ export default function App() {
       pushHistory(project);
       setProject(parsed);
       setSelectedClipId(null);
+      // A .sic carries both workspaces.
+      const loadedConcat = parsed.concat ?? concat;
+      if (parsed.concat) {
+        setConcat(parsed.concat);
+      }
       void hydrateSources(parsed.audio_pool || []);
+      markClean(parsed, loadedConcat);
     },
-    [project, pushHistory, handleStop, hydrateSources]
+    [project, concat, pushHistory, handleStop, hydrateSources, markClean]
   );
 
   const handleOpenProjectPath = useCallback(
@@ -998,6 +1100,36 @@ export default function App() {
     []
   );
 
+  // ---------------------------------------------------------------------------
+  // Auto-save
+  // ---------------------------------------------------------------------------
+
+  // Kept in a ref so the interval never has to be torn down and rebuilt as the
+  // project changes, which would keep resetting the countdown.
+  const autoSaveRef = useRef<{ dirty: boolean; path: string | null; save: typeof handleSaveProject }>(
+    { dirty: false, path: null, save: handleSaveProject }
+  );
+  useEffect(() => {
+    autoSaveRef.current = { dirty: isDirty, path: savedPath, save: handleSaveProject };
+  }, [isDirty, savedPath, handleSaveProject]);
+
+  useEffect(() => {
+    if (!settings.autoSaveEnabled) return;
+    const intervalMs = Math.max(1, settings.autoSaveMinutes) * 60_000;
+
+    const timer = setInterval(() => {
+      const { dirty, path, save } = autoSaveRef.current;
+      // Only ever writes over a file the user already chose: auto-save must not
+      // invent a location or pop a dialog while they are working.
+      if (!dirty || !path) return;
+      void save({ silent: true }).then((ok) => {
+        if (ok) setLastAutoSaveAt(Date.now());
+      });
+    }, intervalMs);
+
+    return () => clearInterval(timer);
+  }, [settings.autoSaveEnabled, settings.autoSaveMinutes]);
+
   /**
    * Native OS drag-and-drop. Tauri intercepts file drops before the webview
    * sees them, so the HTML drag events in the sidebar never fire in the desktop
@@ -1071,6 +1203,20 @@ export default function App() {
         return;
       }
 
+      // Save: Ctrl+S, Save As: Ctrl+Shift+S
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        void handleSaveProject({ saveAs: e.shiftKey });
+        return;
+      }
+
+      // Open: Ctrl+O
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        void handleOpenProject();
+        return;
+      }
+
       // Undo: Ctrl+Z / Cmd+Z (without Shift)
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
         e.preventDefault();
@@ -1109,11 +1255,22 @@ export default function App() {
         return;
       }
 
-      // Space: Play / Pause
+      // Space plays whichever view is on screen. It used to always drive the
+      // timeline transport, so pressing it in concat mode started the timeline.
       if (e.code === 'Space') {
         e.preventDefault();
-        handlePlayPause();
-      } else if (e.code === 'KeyS' && selectedClipId) {
+        if (mode === 'concat') {
+          handleConcatPlayPause();
+        } else {
+          handlePlayPause();
+        }
+        return;
+      }
+
+      // Everything below is timeline-only.
+      if (mode !== 'timeline') return;
+
+      if (e.code === 'KeyS' && selectedClipId) {
         e.preventDefault();
         handleSplitClip(selectedClipId, currentTimeMs);
       } else if ((e.code === 'Delete' || e.code === 'Backspace') && selectedClipId) {
@@ -1131,9 +1288,13 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
+    mode,
     handlePlayPause,
+    handleConcatPlayPause,
     handleUndo,
     handleRedo,
+    handleSaveProject,
+    handleOpenProject,
     selectedClipId,
     currentTimeMs,
     handleGoToStart,
@@ -1179,7 +1340,41 @@ export default function App() {
   }, [project.audio_pool]);
 
   const totalDurationMs = calculateTotalDurationMs();
-  const timelineWidth = Math.max(1800, (totalDurationMs / 1000) * zoom * 1.25);
+
+  /**
+   * Browsers cap how large a <canvas> can be. Chromium refuses anything much
+   * over 16384px per side on many GPUs, and a refused canvas renders as the
+   * broken-content placeholder (the sad face) with a blank grid behind it.
+   *
+   * The timeline canvas is currently as wide as the whole project, so a long
+   * file at high zoom blew straight past that limit. Zoom is clamped to keep
+   * the canvas inside a safe budget until the renderer is virtualized to draw
+   * only the visible window, which removes the ceiling entirely.
+   */
+  const maxZoom = useMemo(() => {
+    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+    const safeCssWidth = 16384 / dpr;
+    const durationSec = Math.max(1, totalDurationMs / 1000);
+    return Math.max(5, Math.floor(safeCssWidth / (durationSec * 1.25)));
+  }, [totalDurationMs]);
+
+  const zoomCeiling = Math.min(250, maxZoom);
+  const isZoomLimited = zoom >= zoomCeiling && maxZoom < 250;
+
+  // Keep the current zoom inside the ceiling when the project grows.
+  useEffect(() => {
+    setZoom((current) => (current > zoomCeiling ? zoomCeiling : current));
+  }, [zoomCeiling]);
+
+  const setZoomClamped = useCallback(
+    (next: number) => setZoom(Math.max(5, Math.min(zoomCeiling, Math.round(next)))),
+    [zoomCeiling]
+  );
+
+  const timelineWidth = Math.max(
+    1800,
+    Math.min((totalDurationMs / 1000) * zoom * 1.25, 16384 / (typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1))
+  );
   const selectedClip = project.clips.find((c) => c.id === selectedClipId) || null;
 
   return (
@@ -1194,6 +1389,8 @@ export default function App() {
         onModeChange={handleModeChange}
         onRenameProject={(name) => setProject((prev) => ({ ...prev, name }))}
         savedPath={savedPath}
+        isDirty={isDirty}
+        onOpenSettings={() => setIsSettingsOpen(true)}
         isPlaying={isPlaying}
         currentTimeMs={currentTimeMs}
         onPlayPause={handlePlayPause}
@@ -1225,6 +1422,8 @@ export default function App() {
           }}
           onSeek={handleConcatSeek}
           onOpenExport={() => setIsConcatExportOpen(true)}
+          dockHeight={concatDockHeight}
+          onDockHeightChange={setConcatDockHeight}
         />
       ) : (
       <>
@@ -1431,7 +1630,7 @@ export default function App() {
               onUpdateClip={handleUpdateClip}
               onSplitClip={handleSplitClip}
               onSeek={handleSeek}
-              onZoomChange={setZoom}
+              onZoomChange={setZoomClamped}
               onContextMenu={(clientX, clientY, target) => {
                 setContextMenu({ x: clientX, y: clientY, target });
               }}
@@ -1449,13 +1648,13 @@ export default function App() {
           onToggleCollapse={() => setIsRightSidebarCollapsed((prev) => !prev)}
           project={project}
           onNewProject={handleNewProject}
-          onSaveProject={handleSaveProject}
+          onSaveProject={() => void handleSaveProject()}
           onOpenProject={handleOpenProject}
           onOpenExportModal={() => setIsExportModalOpen(true)}
           snapToGrid={snapToGrid}
           onToggleSnap={() => setSnapToGrid(!snapToGrid)}
           zoom={zoom}
-          onZoomChange={setZoom}
+          onZoomChange={setZoomClamped}
           onZoomFit={handleZoomFit}
           canUndo={history.past.length > 0}
           canRedo={history.future.length > 0}
@@ -1511,6 +1710,7 @@ export default function App() {
         itemCount={project.clips.length}
         itemNoun="clip"
         metadata={project.metadata}
+        onUpdateMetadata={handleUpdateMetadata}
         targetLufs={project.master_dsp.target_lufs}
         onExport={(options) => exportProject(project, options)}
       />
@@ -1522,6 +1722,9 @@ export default function App() {
         itemCount={concat.items.length}
         itemNoun="file"
         metadata={concat.metadata}
+        onUpdateMetadata={(updates) =>
+          setConcat((prev) => ({ ...prev, metadata: { ...prev.metadata, ...updates } }))
+        }
         targetLufs={project.master_dsp.target_lufs}
         onExport={handleExportConcat}
       />
@@ -1541,6 +1744,27 @@ export default function App() {
           }
         />
       )}
+
+      {/* Zoom ceiling notice */}
+      {mode === 'timeline' && isZoomLimited && (
+        <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-40 bg-slate-900/95 border border-amber-600/50 text-amber-200 text-[11px] px-3 py-1.5 rounded-lg shadow-xl flex items-center gap-2 pointer-events-none">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+          <span>
+            Maximum zoom for a project this long ({zoomCeiling} px/s). Deeper zoom needs the
+            virtualized renderer, which is next on the list.
+          </span>
+        </div>
+      )}
+
+      {/* Settings */}
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        settings={settings}
+        onChange={updateSettings}
+        onClose={() => setIsSettingsOpen(false)}
+        savedPath={savedPath}
+        lastAutoSaveAt={lastAutoSaveAt}
+      />
 
       {/* 6. Native OS file drop overlay */}
       {isFileDragOver && (

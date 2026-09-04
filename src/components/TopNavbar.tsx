@@ -10,8 +10,10 @@ import {
   PanelRight,
   LayoutGrid,
   ListOrdered,
+  Settings as SettingsIcon,
 } from 'lucide-react';
 import { ProjectState } from '../types/project';
+import { APP_VERSION } from '../version';
 
 export type WorkspaceMode = 'timeline' | 'concat';
 
@@ -21,6 +23,8 @@ interface TopNavbarProps {
   onModeChange: (mode: WorkspaceMode) => void;
   onRenameProject: (name: string) => void;
   savedPath?: string | null;
+  isDirty?: boolean;
+  onOpenSettings?: () => void;
   isPlaying: boolean;
   currentTimeMs: number;
   onPlayPause: () => void;
@@ -42,6 +46,8 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   onModeChange,
   onRenameProject,
   savedPath,
+  isDirty = false,
+  onOpenSettings,
   isPlaying,
   currentTimeMs,
   onPlayPause,
@@ -106,7 +112,9 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
             <span className="font-semibold text-slate-100 tracking-tight text-xs sm:text-sm">
               Splice It
             </span>
-            <span className="text-slate-400 font-mono text-[10px] hidden md:inline">v2.0</span>
+            <span className="text-slate-400 font-mono text-[10px] hidden md:inline">
+              v{APP_VERSION}
+            </span>
           </div>
 
           {isEditingName ? (
@@ -130,13 +138,21 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                 setDraftName(project.name);
                 setIsEditingName(true);
               }}
-              title={savedPath || 'Not saved yet — click to rename'}
+              title={
+                savedPath
+                  ? `${savedPath}${isDirty ? ' (unsaved changes)' : ' (saved)'}`
+                  : 'Not saved yet — Ctrl+S to save, click to rename'
+              }
               className="text-[10px] text-emerald-400/90 hover:text-emerald-300 font-medium truncate max-w-[110px] sm:max-w-[170px] text-left flex items-center gap-1 transition"
             >
               <span className="truncate">
                 {project.name.endsWith('.sic') ? project.name : `${project.name}.sic`}
               </span>
-              {!savedPath && <span className="text-amber-400/80 shrink-0">•</span>}
+              {isDirty && (
+                <span className="text-amber-400/90 shrink-0" title="Unsaved changes">
+                  •
+                </span>
+              )}
             </button>
           )}
         </div>
@@ -280,12 +296,22 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
           <Redo2 className="w-4 h-4" />
         </button>
 
+        {/* Settings */}
+        <button
+          onClick={onOpenSettings}
+          title="Settings"
+          className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition"
+        >
+          <SettingsIcon className="w-4 h-4" />
+        </button>
+
         {/* Divider */}
         <div className="h-4 w-[1px] bg-slate-800 mx-0.5" />
 
         {/* Toggle Right Tools / Audio Management Sidebar */}
         <button
           id="btn-toggle-sidebar"
+          style={{ display: mode === 'timeline' ? undefined : 'none' }}
           onClick={onToggleRightSidebar}
           title={isRightSidebarOpen ? 'Close Tools Sidebar' : 'Open Tools & Audio Pool'}
           className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition ${

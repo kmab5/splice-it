@@ -16,6 +16,11 @@ import {
   Scissors,
   ArrowDownUp,
   Sliders,
+  Shuffle,
+  ChevronsUp,
+  ChevronsDown,
+  ChevronDown as ChevronDownIcon,
+  Eraser,
 } from 'lucide-react';
 import { ConcatItem, ConcatState, MetadataDto } from '../types/project';
 import { MetadataEditor } from './MetadataEditor';
@@ -34,6 +39,8 @@ interface ConcatWorkspaceProps {
   onStop: () => void;
   onSeek: (ms: number) => void;
   onOpenExport: () => void;
+  dockHeight: number;
+  onDockHeightChange: (h: number) => void;
 }
 
 const formatDuration = (ms: number): string => {
@@ -86,12 +93,55 @@ export const ConcatWorkspace: React.FC<ConcatWorkspaceProps> = ({
   onStop,
   onSeek,
   onOpenExport,
+  dockHeight,
+  onDockHeightChange,
 }) => {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
-  const [showTags, setShowTags] = useState(false);
   const [showPool, setShowPool] = useState(false);
+  const [dockTab, setDockTab] = useState<'tags' | 'item'>('tags');
+  const [isDockCollapsed, setIsDockCollapsed] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number; itemId: string | null } | null>(null);
+
+  const dockResizeRef = useRef(false);
+
+  // Close the context menu on any outside click or Escape.
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenu(null);
+    };
+    window.addEventListener('mousedown', close);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', close);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [menu]);
+
+  const handleDockResize = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      dockResizeRef.current = true;
+      const startY = e.clientY;
+      const startH = dockHeight;
+
+      const move = (ev: MouseEvent) => {
+        if (!dockResizeRef.current) return;
+        onDockHeightChange(Math.max(120, Math.min(520, startH + (startY - ev.clientY))));
+      };
+      const up = () => {
+        dockResizeRef.current = false;
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', up);
+      };
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
+    },
+    [dockHeight, onDockHeightChange]
+  );
 
   const { starts, totalMs } = useMemo(() => computeLayout(state.items), [state.items]);
 
@@ -180,6 +230,18 @@ export const ConcatWorkspace: React.FC<ConcatWorkspaceProps> = ({
     [setItems]
   );
 
+  /** Fisher-Yates shuffle. */
+  const randomizeOrder = useCallback(() => {
+    setItems((items) => {
+      const next = [...items];
+      for (let i = next.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [next[i], next[j]] = [next[j], next[i]];
+      }
+      return next;
+    });
+  }, [setItems]);
+
   const handleDrop = (targetIndex: number) => {
     if (dragIndex !== null) moveItem(dragIndex, targetIndex);
     setDragIndex(null);
@@ -218,28 +280,87 @@ export const ConcatWorkspace: React.FC<ConcatWorkspaceProps> = ({
           {formatDuration(currentTimeMs)}
         </span>
 
-        {/* Scrub bar */}
+        {/* Sequence strip: every file drawn to scale, with gaps and crossfades */}
         <div
-          className="flex-1 h-2 bg-slate-800/80 rounded-full relative cursor-pointer group min-w-0"
+          className="flex-1 h-8 bg-slate-950/80 rounded border border-slate-800 relative cursor-pointer group min-w-0 overflow-hidden"
           onClick={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
             onSeek(((e.clientX - rect.left) / rect.width) * totalMs);
           }}
+          title="Click to scrub. Blocks are files, dark spans are gaps, hatched ends are crossfades."
         >
+          {totalMs > 0 &&
+            state.items.map((item, i) => {
+              const leftPct = (starts[i] / totalMs) * 100;
+              const widthPct = (item.duration_ms / totalMs) * 100;
+              const isSel = item.id === selectedId;
+              const nextCrossfade =
+                i < state.items.length - 1 ? Math.min(item.crossfade_ms, item.duration_ms) : 0;
+              const xfPct = (nextCrossfade / totalMs) * 100;
+
+              return (
+                <div
+                  key={item.id}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedId(isSel ? null : item.id);
+                  }}
+                  className={`absolute top-0 bottom-0 border-r transition-colors ${
+                    isSel
+                      ? 'bg-cyan-500/40 border-cyan-300'
+                      : i % 2 === 0
+                      ? 'bg-cyan-700/35 border-slate-900 hover:bg-cyan-600/45'
+                      : 'bg-sky-700/35 border-slate-900 hover:bg-sky-600/45'
+                  }`}
+                  style={{ left: `${leftPct}%`, width: `${Math.max(0.4, widthPct)}%` }}
+                  title={`${i + 1}. ${item.name}`}
+                >
+                  <span className="absolute inset-0 flex items-center px-1 text-[9px] font-medium text-slate-200/90 truncate pointer-events-none">
+                    {widthPct > 6 ? item.name : ''}
+                  </span>
+
+                  {/* Crossfade region, drawn as a hatched overlap at this block's tail */}
+                  {xfPct > 0 && (
+                    <span
+                      className="absolute top-0 bottom-0 right-0 pointer-events-none"
+                      style={{
+                        width: `${(nextCrossfade / item.duration_ms) * 100}%`,
+                        backgroundImage:
+                          'repeating-linear-gradient(45deg, rgba(34,211,238,0.55) 0 3px, transparent 3px 6px)',
+                      }}
+                    />
+                  )}
+                </div>
+              );
+            })}
+
+          {/* Gap markers sit in the empty space between blocks */}
+          {totalMs > 0 &&
+            state.items.map((item, i) => {
+              if (i === state.items.length - 1 || item.gap_after_ms <= 0 || item.crossfade_ms > 0) {
+                return null;
+              }
+              const gapStart = starts[i] + item.duration_ms;
+              return (
+                <div
+                  key={`gap-${item.id}`}
+                  className="absolute top-0 bottom-0 pointer-events-none border-x border-amber-500/40"
+                  style={{
+                    left: `${(gapStart / totalMs) * 100}%`,
+                    width: `${Math.max(0.2, (item.gap_after_ms / totalMs) * 100)}%`,
+                    backgroundImage:
+                      'repeating-linear-gradient(90deg, rgba(245,158,11,0.30) 0 2px, transparent 2px 5px)',
+                  }}
+                  title={`Gap ${(item.gap_after_ms / 1000).toFixed(2)}s`}
+                />
+              );
+            })}
+
+          {/* Playhead */}
           <div
-            className="absolute inset-y-0 left-0 bg-gradient-to-r from-cyan-600 to-cyan-400 rounded-full"
-            style={{ width: `${progressPct}%` }}
+            className="absolute top-0 bottom-0 w-0.5 bg-cyan-300 shadow-[0_0_6px_rgba(103,232,249,0.9)] pointer-events-none"
+            style={{ left: `${progressPct}%` }}
           />
-          {/* Item boundary ticks */}
-          {state.items.map((item, i) =>
-            i === 0 ? null : (
-              <div
-                key={item.id}
-                className="absolute top-0 bottom-0 w-px bg-slate-600 group-hover:bg-slate-500"
-                style={{ left: `${totalMs > 0 ? (starts[i] / totalMs) * 100 : 0}%` }}
-              />
-            )
-          )}
         </div>
 
         <span className="font-mono text-slate-400 text-xs tabular-nums shrink-0">
@@ -247,18 +368,6 @@ export const ConcatWorkspace: React.FC<ConcatWorkspaceProps> = ({
         </span>
 
         <div className="h-5 w-px bg-slate-800 shrink-0" />
-
-        <button
-          onClick={() => setShowTags((v) => !v)}
-          className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 border transition shrink-0 ${
-            showTags
-              ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
-              : 'bg-slate-800/70 border-slate-700 text-slate-300 hover:text-white'
-          }`}
-        >
-          <Tag className="w-3.5 h-3.5" />
-          <span className="hidden md:inline">Tags</span>
-        </button>
 
         <button
           onClick={onOpenExport}
@@ -320,6 +429,16 @@ export const ConcatWorkspace: React.FC<ConcatWorkspaceProps> = ({
               Reverse
             </button>
 
+            <button
+              onClick={randomizeOrder}
+              disabled={state.items.length < 2}
+              title="Shuffle the list into a random order"
+              className="px-2.5 py-1.5 bg-slate-800/70 hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-fuchsia-300 rounded-lg text-xs flex items-center gap-1.5 transition disabled:opacity-40"
+            >
+              <Shuffle className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Randomize</span>
+            </button>
+
             <div className="flex-1" />
 
             {/* Bulk junction controls */}
@@ -371,7 +490,13 @@ export const ConcatWorkspace: React.FC<ConcatWorkspaceProps> = ({
           )}
 
           {/* The ordered list */}
-          <div className="flex-1 overflow-y-auto p-4">
+          <div
+            className="flex-1 overflow-y-auto p-4"
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setMenu({ x: e.clientX, y: e.clientY, itemId: null });
+            }}
+          >
             {state.items.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-center text-slate-500">
                 <ListOrdered className="w-12 h-12 mb-3 opacity-25 text-cyan-400" />
@@ -413,6 +538,12 @@ export const ConcatWorkspace: React.FC<ConcatWorkspaceProps> = ({
                           handleDrop(index);
                         }}
                         onClick={() => setSelectedId(isSelected ? null : item.id)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setSelectedId(item.id);
+                          setMenu({ x: e.clientX, y: e.clientY, itemId: item.id });
+                        }}
                         className={`group rounded-lg border px-3 py-2.5 flex items-center gap-3 cursor-pointer transition ${
                           isSelected
                             ? 'bg-cyan-950/30 border-cyan-500/60'
@@ -595,120 +726,317 @@ export const ConcatWorkspace: React.FC<ConcatWorkspaceProps> = ({
               </label>
             </div>
 
-            {/* Selected item controls */}
-            <div className="pt-2 border-t border-slate-800">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2 block">
-                Selected Item
-              </span>
-
-              {!selected ? (
-                <p className="text-[11px] text-slate-500">
-                  Click an item in the list to adjust its level and what follows it.
-                </p>
-              ) : (
-                <div className="space-y-3">
-                  <div className="text-xs text-slate-200 font-medium truncate" title={selected.name}>
-                    {selected.name}
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between text-[10px] mb-1">
-                      <span className="text-slate-400">Gain</span>
-                      <span className="font-mono text-emerald-400">
-                        {linearToDb(selected.gain) > 0 ? '+' : ''}
-                        {linearToDb(selected.gain).toFixed(1)} dB
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={-24}
-                      max={6}
-                      step={0.5}
-                      value={linearToDb(selected.gain)}
-                      onChange={(e) =>
-                        updateItem(selected.id, { gain: dbToLinear(Number(e.target.value)) })
-                      }
-                      className="w-full si-slider [--si-accent:#10b981]"
-                    />
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between text-[10px] mb-1">
-                      <span className="text-slate-400">Gap after</span>
-                      <span className="font-mono text-amber-400">
-                        {(selected.gap_after_ms / 1000).toFixed(2)}s
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={5000}
-                      step={50}
-                      value={selected.gap_after_ms}
-                      disabled={selected.crossfade_ms > 0}
-                      onChange={(e) =>
-                        updateItem(selected.id, {
-                          gap_after_ms: Number(e.target.value),
-                          crossfade_ms: 0,
-                        })
-                      }
-                      className="w-full si-slider [--si-accent:#f59e0b]"
-                    />
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between text-[10px] mb-1">
-                      <span className="text-slate-400">Crossfade into next</span>
-                      <span className="font-mono text-cyan-400">
-                        {(selected.crossfade_ms / 1000).toFixed(2)}s
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={5000}
-                      step={50}
-                      value={selected.crossfade_ms}
-                      onChange={(e) =>
-                        updateItem(selected.id, {
-                          crossfade_ms: Number(e.target.value),
-                          gap_after_ms: 0,
-                        })
-                      }
-                      className="w-full si-slider [--si-accent:#22d3ee]"
-                    />
-                    <p className="text-[10px] text-slate-500 mt-1">
-                      A crossfade overlaps this file with the next, so it shortens the total.
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
           </div>
         </div>
       </div>
 
-      {/* Tag editor drawer */}
-      {showTags && (
-        <div className="h-64 border-t border-slate-800 shrink-0 flex flex-col min-h-0">
-          <div className="px-4 py-1.5 bg-[#0F172A] border-b border-slate-800 flex items-center justify-between shrink-0">
-            <span className="text-[10px] uppercase tracking-widest font-bold text-emerald-400">
-              Output File Tags
-            </span>
-            <button
-              onClick={() => setShowTags(false)}
-              className="text-slate-500 hover:text-slate-300 text-xs px-2 transition"
-            >
-              Close
-            </button>
+      {/* Bottom dock: output tags and the selected item, resizable and collapsible */}
+      <div
+        className="border-t border-slate-800 bg-[#0F172A] flex flex-col shrink-0"
+        style={{ height: isDockCollapsed ? 34 : dockHeight }}
+      >
+        {!isDockCollapsed && (
+          <div
+            onMouseDown={handleDockResize}
+            className="h-2 w-full bg-slate-800/60 hover:bg-cyan-500/40 cursor-row-resize flex items-center justify-center transition-colors group shrink-0"
+            title="Drag to resize"
+          >
+            <div className="w-12 h-1 rounded-full bg-slate-600 group-hover:bg-cyan-300 transition-colors" />
           </div>
+        )}
+
+        <div className="flex items-center border-b border-slate-800 shrink-0 h-8">
+          <button
+            onClick={() => {
+              setDockTab('tags');
+              setIsDockCollapsed(false);
+            }}
+            className={`px-4 h-full text-[10px] uppercase tracking-widest font-bold flex items-center gap-1.5 transition ${
+              dockTab === 'tags' && !isDockCollapsed
+                ? 'border-b-2 border-emerald-500 text-emerald-400 bg-slate-800/20'
+                : 'text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            <Tag className="w-3 h-3" />
+            Output Tags
+          </button>
+          <button
+            onClick={() => {
+              setDockTab('item');
+              setIsDockCollapsed(false);
+            }}
+            className={`px-4 h-full text-[10px] uppercase tracking-widest font-bold flex items-center gap-1.5 transition ${
+              dockTab === 'item' && !isDockCollapsed
+                ? 'border-b-2 border-cyan-500 text-cyan-400 bg-slate-800/20'
+                : 'text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            <Sliders className="w-3 h-3" />
+            Selected Item
+          </button>
+
+          <div className="flex-1" />
+
+          <button
+            onClick={() => setIsDockCollapsed((v) => !v)}
+            className="px-3 h-full text-slate-500 hover:text-slate-300 transition"
+            title={isDockCollapsed ? 'Expand' : 'Collapse'}
+          >
+            {isDockCollapsed ? (
+              <ChevronUp className="w-3.5 h-3.5" />
+            ) : (
+              <ChevronDownIcon className="w-3.5 h-3.5" />
+            )}
+          </button>
+        </div>
+
+        {!isDockCollapsed && (
           <div className="flex-1 min-h-0 overflow-y-auto">
-            <MetadataEditor
-              metadata={state.metadata}
-              onUpdateMetadata={(updates: Partial<MetadataDto>) =>
-                onChange((prev) => ({ ...prev, metadata: { ...prev.metadata, ...updates } }))
-              }
-            />
+            {dockTab === 'tags' ? (
+              <MetadataEditor
+                metadata={state.metadata}
+                onUpdateMetadata={(updates: Partial<MetadataDto>) =>
+                  onChange((prev) => ({ ...prev, metadata: { ...prev.metadata, ...updates } }))
+                }
+              />
+            ) : (
+              <div className="p-4">
+                {!selected ? (
+                  <div className="text-center text-slate-500 py-8">
+                    <Sliders className="w-8 h-8 mx-auto mb-2 opacity-25" />
+                    <p className="text-xs">Select a file in the list to adjust it.</p>
+                  </div>
+                ) : (
+                  <div className="max-w-3xl mx-auto space-y-4">
+                    <div className="bg-slate-950/70 p-3 rounded-lg border border-slate-800">
+                      <input
+                        type="text"
+                        value={selected.name}
+                        onChange={(e) => updateItem(selected.id, { name: e.target.value })}
+                        className="text-sm font-bold text-slate-100 bg-transparent hover:bg-slate-900 focus:bg-slate-900 px-1.5 py-0.5 rounded focus:outline-none w-full"
+                      />
+                      <div className="text-[10px] text-slate-500 font-mono pl-1.5 mt-0.5 truncate">
+                        {selected.source_path}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="bg-slate-950/70 p-3 rounded-lg border border-slate-800">
+                        <div className="flex justify-between text-[10px] mb-1.5">
+                          <span className="text-slate-400 uppercase tracking-wider">Gain</span>
+                          <span className="font-mono text-emerald-400 font-bold">
+                            {linearToDb(selected.gain) > 0 ? '+' : ''}
+                            {linearToDb(selected.gain).toFixed(1)} dB
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={-24}
+                          max={6}
+                          step={0.5}
+                          value={linearToDb(selected.gain)}
+                          onChange={(e) =>
+                            updateItem(selected.id, { gain: dbToLinear(Number(e.target.value)) })
+                          }
+                          className="w-full si-slider [--si-accent:#10b981]"
+                        />
+                      </div>
+
+                      <div className="bg-slate-950/70 p-3 rounded-lg border border-slate-800">
+                        <div className="flex justify-between text-[10px] mb-1.5">
+                          <span className="text-slate-400 uppercase tracking-wider">Gap After</span>
+                          <span className="font-mono text-amber-400 font-bold">
+                            {(selected.gap_after_ms / 1000).toFixed(2)}s
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={5000}
+                          step={50}
+                          value={selected.gap_after_ms}
+                          disabled={selected.crossfade_ms > 0}
+                          onChange={(e) =>
+                            updateItem(selected.id, {
+                              gap_after_ms: Number(e.target.value),
+                              crossfade_ms: 0,
+                            })
+                          }
+                          className="w-full si-slider [--si-accent:#f59e0b]"
+                        />
+                      </div>
+
+                      <div className="bg-slate-950/70 p-3 rounded-lg border border-slate-800">
+                        <div className="flex justify-between text-[10px] mb-1.5">
+                          <span className="text-slate-400 uppercase tracking-wider">Crossfade</span>
+                          <span className="font-mono text-cyan-400 font-bold">
+                            {(selected.crossfade_ms / 1000).toFixed(2)}s
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={5000}
+                          step={50}
+                          value={selected.crossfade_ms}
+                          onChange={(e) =>
+                            updateItem(selected.id, {
+                              crossfade_ms: Number(e.target.value),
+                              gap_after_ms: 0,
+                            })
+                          }
+                          className="w-full si-slider [--si-accent:#22d3ee]"
+                        />
+                        <p className="text-[9px] text-slate-500 mt-1">
+                          Overlaps into the next file, shortening the total.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Context menu */}
+      {menu && (
+        <div
+          className="fixed z-[70] w-52 bg-[#0F172A]/95 backdrop-blur-md border border-slate-700/80 rounded-lg shadow-2xl p-1 text-slate-200 text-xs select-none divide-y divide-slate-800"
+          style={{
+            left: Math.min(menu.x, window.innerWidth - 220),
+            top: Math.min(menu.y, window.innerHeight - 300),
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {menu.itemId && (
+            <div className="py-1">
+              {(() => {
+                const idx = state.items.findIndex((i) => i.id === menu.itemId);
+                const item = state.items[idx];
+                if (!item) return null;
+                return (
+                  <>
+                    <div className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-slate-400 truncate">
+                      {idx + 1}. {item.name}
+                    </div>
+                    {[
+                      {
+                        icon: <ChevronsUp className="w-3.5 h-3.5 text-cyan-400" />,
+                        label: 'Move to Top',
+                        action: () => moveItem(idx, 0),
+                        disabled: idx === 0,
+                      },
+                      {
+                        icon: <ChevronsDown className="w-3.5 h-3.5 text-cyan-400" />,
+                        label: 'Move to Bottom',
+                        action: () => moveItem(idx, state.items.length - 1),
+                        disabled: idx === state.items.length - 1,
+                      },
+                      {
+                        icon: <Copy className="w-3.5 h-3.5 text-slate-400" />,
+                        label: 'Duplicate',
+                        action: () => duplicateItem(item.id),
+                      },
+                    ].map((entry) => (
+                      <button
+                        key={entry.label}
+                        disabled={entry.disabled}
+                        onClick={() => {
+                          entry.action();
+                          setMenu(null);
+                        }}
+                        className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800/80 flex items-center gap-2 text-slate-200 hover:text-white transition disabled:opacity-30 disabled:hover:bg-transparent"
+                      >
+                        {entry.icon}
+                        {entry.label}
+                      </button>
+                    ))}
+
+                    <button
+                      onClick={() => {
+                        updateItem(item.id, { gap_after_ms: 500, crossfade_ms: 0 });
+                        setMenu(null);
+                      }}
+                      className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800/80 flex items-center gap-2 text-amber-300 transition"
+                    >
+                      <Scissors className="w-3.5 h-3.5 rotate-90" />
+                      Add 0.5s Gap After
+                    </button>
+                    <button
+                      onClick={() => {
+                        updateItem(item.id, { crossfade_ms: 500, gap_after_ms: 0 });
+                        setMenu(null);
+                      }}
+                      className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800/80 flex items-center gap-2 text-cyan-300 transition"
+                    >
+                      <Scissors className="w-3.5 h-3.5 rotate-90" />
+                      Crossfade 0.5s Into Next
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        removeItem(item.id);
+                        setMenu(null);
+                      }}
+                      className="w-full text-left px-2.5 py-1.5 rounded hover:bg-rose-950/40 text-rose-300 hover:text-rose-200 flex items-center gap-2 transition"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                      Remove from List
+                    </button>
+                  </>
+                );
+              })()}
+            </div>
+          )}
+
+          <div className="py-1">
+            <button
+              onClick={() => {
+                void onImportRequest();
+                setMenu(null);
+              }}
+              className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800/80 flex items-center gap-2 text-slate-200 transition"
+            >
+              <Plus className="w-3.5 h-3.5 text-cyan-400" />
+              Add Files
+            </button>
+            <button
+              onClick={() => {
+                randomizeOrder();
+                setMenu(null);
+              }}
+              disabled={state.items.length < 2}
+              className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800/80 flex items-center gap-2 text-slate-200 transition disabled:opacity-30"
+            >
+              <Shuffle className="w-3.5 h-3.5 text-fuchsia-400" />
+              Randomize Order
+            </button>
+            <button
+              onClick={() => {
+                setItems((items) => [...items].reverse());
+                setMenu(null);
+              }}
+              disabled={state.items.length < 2}
+              className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800/80 flex items-center gap-2 text-slate-200 transition disabled:opacity-30"
+            >
+              <ArrowDownUp className="w-3.5 h-3.5 text-slate-400" />
+              Reverse Order
+            </button>
+            <button
+              onClick={() => {
+                if (window.confirm('Remove every file from the concat list?')) {
+                  setItems(() => []);
+                }
+                setMenu(null);
+              }}
+              disabled={state.items.length === 0}
+              className="w-full text-left px-2.5 py-1.5 rounded hover:bg-rose-950/40 text-rose-300 flex items-center gap-2 transition disabled:opacity-30"
+            >
+              <Eraser className="w-3.5 h-3.5 text-rose-400" />
+              Clear List
+            </button>
           </div>
         </div>
       )}

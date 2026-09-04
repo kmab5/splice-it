@@ -13,6 +13,8 @@ interface ExportModalProps {
   /** Singular noun for the count, e.g. 'clip' or 'file'. */
   itemNoun: string;
   metadata: MetadataDto;
+  /** When supplied, the tag summary becomes editable in place. */
+  onUpdateMetadata?: (updates: Partial<MetadataDto>) => void;
   targetLufs: number;
   /** Performs the actual render. Supplied by whichever mode opened the modal. */
   onExport: (
@@ -45,6 +47,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   itemCount,
   itemNoun,
   metadata,
+  onUpdateMetadata,
   targetLufs,
   onExport,
 }) => {
@@ -198,27 +201,91 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             </div>
           </div>
 
-          {/* Embedded Metadata Summary */}
+          {/* Metadata — editable here so tags can be set without leaving the dialog */}
           <div className="bg-slate-950/80 p-3 rounded-lg border border-slate-800">
-            <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold mb-1">
-              Metadata to be Embedded
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
+                Metadata to be Embedded
+              </span>
+              {onUpdateMetadata && (
+                <span className="text-[10px] text-slate-500">editable</span>
+              )}
             </div>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-slate-300">
-              <div>
-                <span className="text-slate-500">Title:</span> {metadata.title || defaultFileName}
+
+            {onUpdateMetadata ? (
+              <div className="grid grid-cols-2 gap-2">
+                {(
+                  [
+                    { key: 'title', label: 'Title', placeholder: defaultFileName },
+                    { key: 'artist', label: 'Artist', placeholder: 'Artist' },
+                    { key: 'album', label: 'Album', placeholder: 'Album' },
+                    { key: 'genre', label: 'Genre', placeholder: 'Genre' },
+                  ] as const
+                ).map((field) => (
+                  <div key={field.key}>
+                    <label className="block text-[9px] uppercase tracking-wider text-slate-500 mb-0.5">
+                      {field.label}
+                    </label>
+                    <input
+                      type="text"
+                      value={(metadata[field.key] as string) || ''}
+                      placeholder={field.placeholder}
+                      onChange={(e) => onUpdateMetadata({ [field.key]: e.target.value })}
+                      className="w-full bg-slate-900 border border-slate-700/80 rounded px-2 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                ))}
+
+                <div>
+                  <label className="block text-[9px] uppercase tracking-wider text-slate-500 mb-0.5">
+                    Year
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={9999}
+                    value={metadata.year || ''}
+                    placeholder="2026"
+                    onChange={(e) => {
+                      const n = Math.floor(Number(e.target.value));
+                      onUpdateMetadata({
+                        year: e.target.value.trim() === '' || !Number.isFinite(n) || n <= 0
+                          ? undefined
+                          : Math.min(n, 9999),
+                      });
+                    }}
+                    className="w-full bg-slate-900 border border-slate-700/80 rounded px-2 py-1 text-[11px] text-slate-200 font-mono focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[9px] uppercase tracking-wider text-slate-500 mb-0.5">
+                    ISRC
+                  </label>
+                  <input
+                    type="text"
+                    value={metadata.isrc || ''}
+                    placeholder="US-XXX-00-00000"
+                    onChange={(e) => onUpdateMetadata({ isrc: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-700/80 rounded px-2 py-1 text-[11px] text-slate-200 font-mono focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div className="col-span-2 text-[10px] text-slate-500 pt-1 border-t border-slate-800/60">
+                  Cover art: {metadata.cover_art_base64 ? 'embedded' : 'none'} — set it in the Tags
+                  panel.
+                </div>
               </div>
-              <div>
-                <span className="text-slate-500">Artist:</span>{' '}
-                {metadata.artist || 'Unassigned'}
+            ) : (
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-slate-300">
+                <div>
+                  <span className="text-slate-500">Title:</span> {metadata.title || defaultFileName}
+                </div>
+                <div>
+                  <span className="text-slate-500">Artist:</span> {metadata.artist || 'Unassigned'}
+                </div>
               </div>
-              <div>
-                <span className="text-slate-500">ISRC:</span> {metadata.isrc || 'None'}
-              </div>
-              <div>
-                <span className="text-slate-500">Cover:</span>{' '}
-                {metadata.cover_art_base64 ? 'Embedded' : 'None'}
-              </div>
-            </div>
+            )}
           </div>
 
           {/* Status feedback */}

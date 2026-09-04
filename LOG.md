@@ -1,181 +1,149 @@
 # Splice It — Change Log
 
-## Turn 5 — UI polish, EQ answer, and Concat mode
+## Turn 6 — v0.2.6 — Step 3: Workspace correctness, persistence and concat depth
 
-Export confirmed working, so this turn covers the polish items, answers the EQ
-question, and delivers **Step 2: Concat mode**.
+### Versioning
 
----
+From now on every edit bumps the version in all three places at once, keyed to
+the turn number as you set it:
 
-### 1. Sliders and scrollbars
+| File | Field |
+|---|---|
+| `package.json` | `version` |
+| `src-tauri/Cargo.toml` | `[package] version` |
+| `src-tauri/tauri.conf.json` | `version` |
 
-**`src/index.css`** — the whole file was one line (`@import "tailwindcss";`), so
-every control was a Windows default.
-
-- **Scrollbars**: slim 10px dark thumbs with rounded caps, transparent tracks,
-  and a hover state. Applied through both `scrollbar-color` (Firefox) and
-  `::-webkit-scrollbar` (Chromium/WebView2).
-- **Sliders**: thin 4px dark track with a small accent thumb. The filled portion
-  uses the box-shadow trick — the thumb casts a very wide shadow to its left,
-  clipped by `overflow: hidden` on the input — so the track fills with no
-  JavaScript and no per-slider state.
-- Colour comes from a `--si-accent` custom property, set per instance with a
-  Tailwind arbitrary property: `class="si-slider [--si-accent:#10b981]"`. All 16
-  range inputs across TrackHeader, RightSidebar, MasteringRack, and ClipInspector
-  were converted. The two `accent-*` checkboxes in ExportModal were left alone,
-  since the native checkbox accent looks fine.
-- **Number spinners hidden.** They were the control that walked the year field
-  negative last turn, and they look out of place in a dark UI.
-
-### 2. The white overscroll flash
-
-`html`, `body`, and `#root` now have a `slate-950` background and
-`overscroll-behavior: none`, with `overscroll-behavior: contain` on everything
-else. The white was the unpainted document showing through when a scroll
-container was pulled past its end, and the `contain` rule also stops an inner
-panel from chaining its scroll to the page behind it. `color-scheme: dark` tells
-the browser to render native widgets and the overscroll area dark too.
-
-### 3. Are the EQ controls useless?
-
-**No — but you were right that something was off, and it was worse than subtle.**
-Two real reasons you saw no effect:
-
-1. **Until last turn there were no EQ controls at all.** If you were on the build
-   from the screenshot, the five `eq_*` settings had no inputs. Nothing you
-   touched in that panel was EQ — the visible sliders are stereo width, limiter
-   ceiling, LUFS target, and compressor.
-2. **The defaults are almost inaudible by design.** A −2.5 dB shelf starting at
-   12 kHz only touches the top octave, and a −3 dB bell at 300 Hz with Q 1.5 is a
-   gentle cleanup, not an effect. Both are mastering-style corrections you'd
-   struggle to hear without an A/B.
-
-Changes this turn to make the effect obvious:
-
-- **Wider, more useful ranges.** The shelf sweeps from 2 kHz to 20 kHz rather
-  than sitting near the top of the spectrum, and both bands go from −12 dB to
-  +6 dB. Pull the bell to −12 dB at 300 Hz and the difference is unmistakable.
-- **Monitor A/B bypass** (`Chain Active` / `Chain BYPASSED` button at the top of
-  the mastering rack). It reroutes track output around the EQ and compressor so
-  you can hear the chain engage and disengage while playing. Monitoring only —
-  the export always applies the chain. This is the fastest way to answer "is
-  this doing anything".
-- **The curve is now truthful** (from last turn): it is computed from the same
-  RBJ biquad coefficients the Rust exporter uses, so what you see is what gets
-  rendered.
-
-One thing worth knowing: with **Match LUFS** ticked at export, a broad gain
-change gets partly compensated by the loudness match, which can mask an EQ move.
-The tonal shape still changes; the overall level does not.
-
-### 4. Project name and logo
-
-- **Saving now renames the project.** `handleSaveProject` picked a path and wrote
-  the file but never fed the chosen filename back into state, so the header kept
-  saying "Untitled Project" forever. It now sets the name from the saved
-  filename, and opening a project does the same.
-- **The name is editable.** Click it in the header to rename; Enter commits,
-  Escape cancels.
-- **Unsaved indicator.** A small amber dot shows next to the name until the
-  project has been saved to a path. Hovering shows the full path.
-- **Logo added** next to the title, loaded from `public/assets/logo.png`, with a
-  fallback to the old "SI" lettermark if the file is ever missing.
+All three are now **0.2.6**. To stop them drifting apart, `vite.config.ts` reads
+`package.json` at build time and injects `__APP_VERSION__`, which
+`src/version.ts` re-exports as `APP_VERSION`. The navbar shows the real version
+instead of the hardcoded "v2.0", and saved `.sic` files record the app version
+that wrote them for future migrations.
 
 ---
 
-## Step 2 — Concat mode
+### Why the sad face appears when zooming into long files
 
-A second workspace dedicated to ordering and joining files. **The timeline
-editor is untouched**: the two modes hold entirely separate state, and switching
-between them stops playback but changes nothing else.
+That is Chromium's broken-content placeholder for a `<canvas>` it **refused to
+allocate**. The timeline canvas is currently as wide as the entire project:
 
-### `src/components/ConcatWorkspace.tsx` (NEW)
+```
+timelineWidth = (durationMs / 1000) * zoom * 1.25
+```
 
-- **Ordered list** with drag-to-reorder, plus up/down buttons for precision.
-- **Sort by name** is numerically aware, so `track2` sorts before `track10`
-  rather than after it. **Reverse** flips the whole list.
-- Per item: duplicate, remove, and a gain slider.
-- **Junction control between every pair**: a gap (silence) or a crossfade
-  (overlap). The two are mutually exclusive at a junction, and the UI enforces
-  that. Bulk dropdowns apply one value to every junction at once.
-- **Running timings**: each row shows its start offset in the output, and the
-  header shows the total length, updating live as you reorder or change a
-  junction. Crossfades correctly shorten the total.
-- **Preview playback** of the whole joined sequence, with a scrub bar marked
-  with item boundaries.
-- **Tag editor drawer** reusing the existing `MetadataEditor`.
-- Sample rate selector (44.1 / 48 / 96 kHz).
+A 10-minute file at 250 px/s asks for a 187,500px canvas — and on a HiDPI
+display the backing store is that again multiplied by the device pixel ratio.
+Chromium caps a canvas at roughly 16,384px per side on many GPUs and refuses
+anything larger, so the element renders as the sad face with the page grid
+showing through.
 
-### `src-tauri/src/commands.rs` — `export_concat`
+**Yes, it is fixable, and properly.** The real fix is to stop drawing the whole
+project and draw only the visible window, translating by the scroll offset. That
+removes the ceiling entirely and also makes scrolling cheaper on long projects.
+It touches the canvas, the ruler, and the scroll container together, so it is
+**Step 4** rather than being rushed in alongside this batch.
 
-A dedicated command, not the timeline exporter. No tracks, no panning, and the
-mastering chain is **opt-in**:
-
-> With unity gain, no crossfade, and the chain off, the output is the input
-> audio placed back to back. Joining files should not silently re-master them.
-
-- Decodes each distinct source once, conformed to the output rate.
-- Lays out the sequence exactly as the UI shows it, clamping any crossfade to
-  the length of both neighbours so it can never overrun a short file.
-- Equal-power (sine/cosine) crossfades, so the overlap holds a constant
-  perceived level instead of dipping.
-- With the chain off, it only intervenes if summing crossfades or gain actually
-  pushed the result past full scale, and then it reports the reduction in the
-  result message. An untouched join stays sample-accurate.
-- Embeds the tags and returns duration, peak, and LUFS like the timeline export.
-
-### Supporting changes
-
-- **`ExportModal` is now shared.** It took a `ProjectState` and called
-  `exportProject` directly; it now takes a count, a noun, metadata, and an
-  `onExport` callback, so both modes use one modal with no duplication.
-- **`audioEngine.playSequence`** schedules an ordered list back to back, routing
-  through the master chain or straight to the output depending on the mode's
-  own setting, so the preview matches the export.
-- **Mode switcher** in the top navbar. The timeline transport hides in concat
-  mode, since concat has its own.
-- Files imported while concat mode is open are appended to the list
-  automatically, and anything already in the audio pool can be added from a
-  "From Pool" picker without re-importing.
+For now the app no longer breaks: zoom is clamped to whatever keeps the canvas
+inside a safe budget, and when you hit that ceiling a small amber notice
+explains why rather than leaving you with a broken graphic. On a long project
+the ceiling is genuinely restrictive, which is exactly why Step 4 is next.
 
 ---
 
-### To apply this update
+### Step 3 — what shipped
 
-1. Copy these files over your working tree, preserving paths.
-2. `npx tsc --noEmit` and `cd src-tauri && cargo check`.
-3. Re-run the **Build Windows Installers** workflow.
+**Space is scoped to the visible workspace.** It always called the timeline
+transport, so pressing it in concat mode started timeline playback. It now
+drives whichever view is on screen, and the timeline-only keys (S to split,
+Delete, Home, End) no longer fire at all in concat mode.
 
-Verified: `tsc --noEmit` passes and `vite build` succeeds. The Rust adds one
-command and two structs and shares the WAV writer that the timeline exporter
-already used, so please send me any `cargo check` output.
+**Ctrl+S saves as a project.** Ctrl+Shift+S is Save As, Ctrl+O opens.
+
+**Saving no longer re-prompts for a location.** Once a project has a path — from
+a save or an open — Ctrl+S writes straight to that file. The dialog now only
+appears for a project that has never been saved, or for an explicit Save As.
+
+**Auto-save**, configurable in the new Settings dialog (gear icon in the navbar):
+on/off and an interval from 1 to 30 minutes, default 5. It only ever overwrites
+a file you already chose — it will not invent a filename or pop a dialog while
+you are working, so it stays dormant until the first manual save. Settings
+persist locally, and the dialog shows the target path and last auto-save time.
+
+Unsaved changes are tracked by comparing against a snapshot of what was last
+written, rather than a "something changed" flag. That matters because saving
+updates the project name, which with a naive flag would immediately re-dirty the
+document it had just saved. An amber dot next to the project name marks unsaved
+work.
+
+**Concat mode is saved into the `.sic` file** (was on the open list). One
+document now carries both workspaces; the Rust exporter ignores the extra field.
+
+**Concat: detailed sequence strip.** The plain progress bar is now a to-scale
+map of the output — one block per file, name shown when there is room, hatched
+cyan at the tail of any block that crossfades, hatched amber spans where there
+are gaps, and a playhead. Clicking a block selects it; clicking the strip scrubs.
+
+**Concat: randomize order.** Fisher-Yates shuffle, in the toolbar and the
+context menu.
+
+**Concat: metadata editor as a bottom tab.** The tag drawer is now a proper
+resizable, collapsible bottom dock with two tabs — Output Tags (the full editor)
+and Selected Item (name, gain, gap, crossfade). The duplicated item controls
+were removed from the right sidebar, which now covers output settings only.
+
+**Concat: context menu.** Right-click a row for Move to Top/Bottom, Duplicate,
+Add 0.5s Gap, Crossfade 0.5s Into Next, and Remove. Right-click empty space for
+Add Files, Randomize, Reverse, and Clear List.
+
+**Metadata is editable in the export dialog.** Title, artist, album, genre, year
+and ISRC can be set without leaving the dialog, in both modes. Edits write back
+to the project or concat state, so they are not lost when the dialog closes.
+
+---
+
+### Files changed
+
+`package.json`, `vite.config.ts`, `src-tauri/Cargo.toml`,
+`src-tauri/tauri.conf.json`, `src/version.ts` (new),
+`src/services/settings.ts` (new), `src/components/SettingsModal.tsx` (new),
+`src/App.tsx`, `src/components/TopNavbar.tsx`,
+`src/components/ConcatWorkspace.tsx`, `src/components/ExportModal.tsx`,
+`src/types/project.ts`.
+
+No Rust source changed this turn beyond the version bump, so `cargo check`
+should still be clean. `tsc --noEmit` passes and `vite build` succeeds.
 
 ---
 
 ### Worth testing
 
-- Join two files with **no gap, no crossfade, chain off**. The result should be
-  the two files back to back with no level change at all.
-- Then set a 1s crossfade and confirm the total length drops by 1s.
-- In the timeline mastering rack, toggle the new **A/B** button while playing to
-  hear the EQ and compressor engage.
-
-### Still open
-
-- Concat items cannot yet be previewed individually from the list (use the
-  audio pool's audition, or the sequence preview).
-- Concat state is held in memory and is not yet written into the `.sic` project
-  file.
-- Peak envelopes remain a fixed 1200 buckets per source.
-- Linear-interpolation resampling.
+- Save with Ctrl+S, edit something, Ctrl+S again — the second save should write
+  silently with no dialog, and the amber dot should clear.
+- Open Settings, set auto-save to 1 minute, make an edit, and wait.
+- Press Space in concat mode and confirm the timeline stays silent.
+- Add a crossfade and watch the hatched region appear on the sequence strip.
 
 ---
 
-## Planned next
+## Remaining plan
 
-### Step 3 — Additional export formats
-FLAC and MP3 encoding, plus format selection in both modes.
+### Step 4 — Timeline rendering at scale
+- **Virtualize the timeline canvas**: draw only the visible window and translate
+  by the scroll offset, in the canvas and the ruler together. Removes the zoom
+  ceiling and the sad face for good.
+- **Zoom-aware peak resolution** (open item): peaks are a fixed 1200 buckets per
+  source, so a long file looks coarse when zoomed. Re-analyze at higher
+  resolution for the visible range.
+- Gain-reduction metering for the compressor and limiter, which currently have
+  controls but no feedback.
 
-### Step 4 — Concat polish
-Persist the concat list into `.sic`, per-item preview, and optional
-loudness-matching across items so a joined compilation sits at an even level.
+### Step 5 — Export formats
+- FLAC encoding, MP3 via `mp3lame-encoder`, and format selection in both modes.
+- Per-format bitrate and compression options.
+
+### Step 6 — Audio quality and polish
+- **Windowed-sinc resampling** (open item) to replace linear interpolation for
+  large sample-rate conversions.
+- Per-item preview from the concat list.
+- Optional loudness matching across concat items, so a joined compilation sits
+  at an even level.
+- Recent-projects list and reopening the last project on launch.
