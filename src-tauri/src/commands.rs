@@ -17,8 +17,8 @@ use symphonia::core::probe::Hint;
 
 use crate::dsp::MasterDspChain;
 use crate::models::{
-    AudioFileInfo, DecodedAudio, ExportOptions, ExportResult, MetadataDto, ProjectState,
-    WaveformPeaks,
+    AudioFileInfo, ConcatRequest, DecodedAudio, ExportOptions, ExportResult, MetadataDto,
+    ProjectState, WaveformPeaks,
 };
 
 // ---------------------------------------------------------------------------
@@ -327,6 +327,100 @@ fn tpdf_noise(state: &mut u32, lsb: f32) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
+// WAV output
+// ---------------------------------------------------------------------------
+
+/// Write interleaved stereo f32 to disk in one of the supported WAV formats.
+fn write_wav_file(
+    path: &str,
+    interleaved: &[f32],
+    sample_rate: u32,
+    format: &str,
+    dither: bool,
+) -> Result<(), String> {
+    let spec = match format {
+        "wav_16" => hound::WavSpec {
+            channels: 2,
+            sample_rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        },
+        "wav_32f" => hound::WavSpec {
+            channels: 2,
+            sample_rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        },
+        "wav_24" => hound::WavSpec {
+            channels: 2,
+            sample_rate,
+            bits_per_sample: 24,
+            sample_format: hound::SampleFormat::Int,
+        },
+        other => {
+            return Err(format!(
+                "Export format '{}' is not supported yet. Choose a WAV format.",
+                other
+            ))
+        }
+    };
+
+    if let Some(parent) = Path::new(path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Cannot create export folder: {}", e))?;
+    }
+
+    let mut writer = hound::WavWriter::create(path, spec)
+        .map_err(|e| format!("Failed to create WAV file: {}", e))?;
+
+    let mut rng_state: u32 = 0x2545_F491;
+
+    match format {
+        "wav_32f" => {
+            for s in interleaved {
+                writer
+                    .write_sample(*s)
+                    .map_err(|e| format!("WAV write error: {}", e))?;
+            }
+        }
+        "wav_16" => {
+            let lsb = 1.0 / 32767.0;
+            for s in interleaved {
+                let v = if dither { *s + tpdf_noise(&mut rng_state, lsb) } else { *s };
+                writer
+                    .write_sample((v.clamp(-1.0, 1.0) * 32767.0).round() as i16)
+                    .map_err(|e| format!("WAV write error: {}", e))?;
+            }
+        }
+        _ => {
+            let lsb = 1.0 / 8_388_607.0;
+            for s in interleaved {
+                let v = if dither { *s + tpdf_noise(&mut rng_state, lsb) } else { *s };
+                writer
+                    .write_sample((v.clamp(-1.0, 1.0) * 8_388_607.0).round() as i32)
+                    .map_err(|e| format!("WAV write error: {}", e))?;
+            }
+        }
+    }
+
+    writer
+        .finalize()
+        .map_err(|e| format!("WAV finalize error: {}", e))
+}
+
+fn peak_of(samples: &[f32]) -> f32 {
+    samples.iter().fold(0.0_f32, |acc, s| acc.max(s.abs()))
+}
+
+fn peak_to_db(peak: f32) -> f32 {
+    if peak > 1e-6 {
+        20.0 * peak.log10()
+    } else {
+        -100.0
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 
@@ -616,101 +710,17 @@ pub async fn export_project(
             }
         }
 
-        let mut peak = 0.0_f32;
-        for s in interleaved.iter() {
-            let a = s.abs();
-            if a > peak {
-                peak = a;
-            }
-        }
-        let peak_db = if peak > 1e-6 {
-            20.0 * peak.log10()
-        } else {
-            -100.0
-        };
+        let peak = peak_of(&interleaved);
+        let peak_db = peak_to_db(peak);
 
         // 6. Write the WAV.
-        let out_path = Path::new(&options.export_path);
-        if let Some(parent) = out_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Cannot create export folder: {}", e))?;
-        }
-
-        let format = options.format.as_str();
-        let spec = match format {
-            "wav_16" => hound::WavSpec {
-                channels: 2,
-                sample_rate,
-                bits_per_sample: 16,
-                sample_format: hound::SampleFormat::Int,
-            },
-            "wav_32f" => hound::WavSpec {
-                channels: 2,
-                sample_rate,
-                bits_per_sample: 32,
-                sample_format: hound::SampleFormat::Float,
-            },
-            "wav_24" => hound::WavSpec {
-                channels: 2,
-                sample_rate,
-                bits_per_sample: 24,
-                sample_format: hound::SampleFormat::Int,
-            },
-            other => {
-                return Err(format!(
-                    "Export format '{}' is not supported yet. Choose a WAV format.",
-                    other
-                ))
-            }
-        };
-
-        let mut writer = hound::WavWriter::create(&options.export_path, spec)
-            .map_err(|e| format!("Failed to create WAV file: {}", e))?;
-
-        // TPDF dither state (see `tpdf_noise` below).
-        let mut rng_state: u32 = 0x2545_F491;
-
-        match format {
-            "wav_32f" => {
-                for s in &interleaved {
-                    writer
-                        .write_sample(*s)
-                        .map_err(|e| format!("WAV write error: {}", e))?;
-                }
-            }
-            "wav_16" => {
-                let lsb = 1.0 / 32767.0;
-                for s in &interleaved {
-                    let dithered = if options.dither {
-                        *s + tpdf_noise(&mut rng_state, lsb)
-                    } else {
-                        *s
-                    };
-                    let v = (dithered.clamp(-1.0, 1.0) * 32767.0).round() as i32;
-                    writer
-                        .write_sample(v as i16)
-                        .map_err(|e| format!("WAV write error: {}", e))?;
-                }
-            }
-            _ => {
-                let lsb = 1.0 / 8_388_607.0;
-                for s in &interleaved {
-                    let dithered = if options.dither {
-                        *s + tpdf_noise(&mut rng_state, lsb)
-                    } else {
-                        *s
-                    };
-                    let v = (dithered.clamp(-1.0, 1.0) * 8_388_607.0).round() as i32;
-                    writer
-                        .write_sample(v)
-                        .map_err(|e| format!("WAV write error: {}", e))?;
-                }
-            }
-        }
-
-        writer
-            .finalize()
-            .map_err(|e| format!("WAV finalize error: {}", e))?;
+        write_wav_file(
+            &options.export_path,
+            &interleaved,
+            sample_rate,
+            &options.format,
+            options.dither,
+        )?;
 
         // 7. Embed the project's metadata into the finished file.
         // A tagging failure should not discard a good render, so it is reported
@@ -737,4 +747,212 @@ pub async fn export_project(
     })
     .await
     .map_err(|e| format!("Export task failure: {}", e))?
+}
+
+/// Decode an ordered list of files and write them end to end as one file.
+///
+/// This is deliberately not the timeline exporter: there are no tracks, no
+/// panning, and the mastering chain is opt-in. With unity gain, no crossfade
+/// and the chain off, the output is the input audio placed back to back.
+#[tauri::command]
+pub async fn export_concat(
+    request: ConcatRequest,
+    options: ExportOptions,
+) -> Result<ExportResult, String> {
+    tokio::task::spawn_blocking(move || {
+        let sample_rate = if request.sample_rate >= 8000 {
+            request.sample_rate
+        } else {
+            44100
+        };
+
+        if request.items.is_empty() {
+            return Err("Nothing to export: the concat list is empty.".to_string());
+        }
+
+        // 1. Decode every distinct source once, conformed to the output rate.
+        let mut cache: HashMap<String, DecodedAudio> = HashMap::new();
+        for item in &request.items {
+            if cache.contains_key(&item.source_path) {
+                continue;
+            }
+            if !Path::new(&item.source_path).exists() {
+                return Err(format!(
+                    "Missing file for '{}': {}",
+                    item.name, item.source_path
+                ));
+            }
+            let decoded = conform_to_rate(decode_file(&item.source_path)?, sample_rate);
+            cache.insert(item.source_path.clone(), decoded);
+        }
+
+        let ms_to_frames = |ms: f64| ((ms.max(0.0) * 0.001) * sample_rate as f64).round() as usize;
+
+        // 2. Lay out the sequence: start frame and crossfade length per item.
+        //    A crossfade overlaps this item with the next, so it also pulls the
+        //    next start earlier. A gap only applies where there is no crossfade.
+        let count = request.items.len();
+        let mut starts: Vec<usize> = Vec::with_capacity(count);
+        let mut fade_out: Vec<usize> = vec![0; count];
+        let mut cursor = 0usize;
+
+        for (i, item) in request.items.iter().enumerate() {
+            let len = cache
+                .get(&item.source_path)
+                .map(|a| a.frames())
+                .unwrap_or(0);
+            starts.push(cursor);
+
+            let is_last = i + 1 == count;
+            let mut xfade = if is_last { 0 } else { ms_to_frames(item.crossfade_ms) };
+
+            // A crossfade cannot be longer than either neighbour.
+            if xfade > 0 {
+                let next_len = request
+                    .items
+                    .get(i + 1)
+                    .and_then(|n| cache.get(&n.source_path))
+                    .map(|a| a.frames())
+                    .unwrap_or(0);
+                xfade = xfade.min(len).min(next_len);
+            }
+            fade_out[i] = xfade;
+
+            let gap = if xfade > 0 { 0 } else { ms_to_frames(item.gap_after_ms) };
+            cursor = cursor + len.saturating_sub(xfade) + gap;
+        }
+
+        let total_frames = starts
+            .iter()
+            .enumerate()
+            .map(|(i, start)| {
+                start
+                    + cache
+                        .get(&request.items[i].source_path)
+                        .map(|a| a.frames())
+                        .unwrap_or(0)
+            })
+            .max()
+            .unwrap_or(0);
+
+        if total_frames == 0 {
+            return Err("Concat output would be empty.".to_string());
+        }
+
+        let mut mix_l = vec![0.0_f32; total_frames];
+        let mut mix_r = vec![0.0_f32; total_frames];
+
+        // 3. Write each item into place, with equal-power crossfades so the
+        //    overlap holds a constant perceived level.
+        for (i, item) in request.items.iter().enumerate() {
+            let source = match cache.get(&item.source_path) {
+                Some(s) => s,
+                None => continue,
+            };
+            let len = source.frames();
+            let start = starts[i];
+            let fade_in_len = if i == 0 { 0 } else { fade_out[i - 1] };
+            let fade_out_len = fade_out[i];
+
+            for f in 0..len {
+                let idx = start + f;
+                if idx >= total_frames {
+                    break;
+                }
+
+                let mut env = 1.0_f32;
+                if fade_in_len > 0 && f < fade_in_len {
+                    let p = f as f32 / fade_in_len as f32;
+                    env *= (p * std::f32::consts::FRAC_PI_2).sin();
+                }
+                if fade_out_len > 0 && f >= len.saturating_sub(fade_out_len) {
+                    let p = (len - f) as f32 / fade_out_len as f32;
+                    env *= (p.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2).sin();
+                }
+
+                let amp = item.gain * env;
+                mix_l[idx] += source.left[f] * amp;
+                mix_r[idx] += source.right[f] * amp;
+            }
+        }
+
+        // 4. Interleave.
+        let mut interleaved = Vec::with_capacity(total_frames * 2);
+        for i in 0..total_frames {
+            interleaved.push(mix_l[i]);
+            interleaved.push(mix_r[i]);
+        }
+
+        let mut note = String::new();
+        let mut measured_lufs = -70.0_f32;
+
+        if request.apply_master_chain {
+            let mut chain = MasterDspChain::new(sample_rate as f32, &request.master_dsp);
+            chain.process_interleaved(&mut interleaved);
+            measured_lufs = chain.get_lufs();
+
+            if options.normalize_to_target_lufs && measured_lufs > -60.0 {
+                let diff = request.master_dsp.target_lufs - measured_lufs;
+                let gain = 10.0_f32.powf(diff.clamp(-12.0, 12.0) / 20.0);
+                let ceiling = 10.0_f32.powf(request.master_dsp.limiter_ceiling_db / 20.0);
+                for s in interleaved.iter_mut() {
+                    *s = (*s * gain).clamp(-ceiling, ceiling);
+                }
+                measured_lufs += diff.clamp(-12.0, 12.0);
+            }
+        } else {
+            // Chain off: leave the audio alone. Only step in if summing the
+            // crossfades or per-item gain actually pushed it past full scale,
+            // so an untouched join stays sample-accurate.
+            let peak = peak_of(&interleaved);
+            if peak > 1.0 {
+                let correction = 0.999 / peak;
+                for s in interleaved.iter_mut() {
+                    *s *= correction;
+                }
+                note = format!(
+                    " (reduced {:.1} dB to prevent clipping)",
+                    -20.0 * correction.log10()
+                );
+            }
+        }
+
+        let peak_db = peak_to_db(peak_of(&interleaved));
+
+        // 5. Write and tag.
+        write_wav_file(
+            &options.export_path,
+            &interleaved,
+            sample_rate,
+            &options.format,
+            options.dither,
+        )?;
+
+        let tag_note = match write_tags(&options.export_path, &request.metadata) {
+            Ok(()) => String::new(),
+            Err(e) => format!(" (metadata could not be embedded: {})", e),
+        };
+
+        let duration_ms = (total_frames as f64 / sample_rate as f64) * 1000.0;
+
+        Ok(ExportResult {
+            path: options.export_path.clone(),
+            duration_ms,
+            measured_lufs,
+            peak_db,
+            sample_rate,
+            format: options.format.clone(),
+            message: format!(
+                "Joined {} file{} into {:.1}s at {} kHz{}{}",
+                request.items.len(),
+                if request.items.len() == 1 { "" } else { "s" },
+                duration_ms / 1000.0,
+                sample_rate as f64 / 1000.0,
+                note,
+                tag_note
+            ),
+        })
+    })
+    .await
+    .map_err(|e| format!("Concat export task failure: {}", e))?
 }

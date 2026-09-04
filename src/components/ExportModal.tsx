@@ -1,12 +1,23 @@
 import React, { useState } from 'react';
-import { ExportFormat, ExportOptions, ExportResult, ProjectState } from '../types/project';
-import { exportProject, isTauri, pickSavePath } from '../services/ipc';
+import { ExportFormat, ExportOptions, ExportResult, MetadataDto } from '../types/project';
+import { isTauri, pickSavePath } from '../services/ipc';
 import { X, Download, ShieldCheck, CheckCircle2, AlertCircle, Loader2, FolderOpen } from 'lucide-react';
 
 interface ExportModalProps {
   isOpen: boolean;
-  project: ProjectState;
   onClose: () => void;
+  /** Filename without extension, offered in the save dialog. */
+  defaultFileName: string;
+  /** How many clips or files will be rendered. */
+  itemCount: number;
+  /** Singular noun for the count, e.g. 'clip' or 'file'. */
+  itemNoun: string;
+  metadata: MetadataDto;
+  targetLufs: number;
+  /** Performs the actual render. Supplied by whichever mode opened the modal. */
+  onExport: (
+    options: ExportOptions
+  ) => Promise<{ success: boolean; message: string; result?: ExportResult }>;
 }
 
 const FORMATS: { id: ExportFormat; title: string; blurb: string }[] = [
@@ -27,7 +38,16 @@ const FORMATS: { id: ExportFormat; title: string; blurb: string }[] = [
   },
 ];
 
-export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, project, onClose }) => {
+export const ExportModal: React.FC<ExportModalProps> = ({
+  isOpen,
+  onClose,
+  defaultFileName,
+  itemCount,
+  itemNoun,
+  metadata,
+  targetLufs,
+  onExport,
+}) => {
   const [format, setFormat] = useState<ExportFormat>('wav_24');
   const [normalizeLufs, setNormalizeLufs] = useState(true);
   const [dither, setDither] = useState(true);
@@ -38,7 +58,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, project, onClo
 
   if (!isOpen) return null;
 
-  const clipCount = project.clips.length;
+  const clipCount = itemCount;
   const canExport = clipCount > 0 && !isExporting;
   // Dither only means anything when truncating to a fixed-point format.
   const ditherApplies = format !== 'wav_32f';
@@ -47,8 +67,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, project, onClo
     setResult(null);
     setIsSuccess(null);
 
-    const safeName = project.name.replace(/[^a-zA-Z0-9_-]/g, '_') || 'Splice_It_Mixdown';
-    let exportPath = `${safeName}_Master.wav`;
+    const safeName = defaultFileName.replace(/[^a-zA-Z0-9_-]/g, '_') || 'Splice_It_Output';
+    let exportPath = `${safeName}.wav`;
 
     // Ask the user where the file goes. The previous build wrote to a relative
     // "./exports" folder, which on a packaged Windows app resolves inside
@@ -69,7 +89,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, project, onClo
       dither: dither && ditherApplies,
     };
 
-    const res = await exportProject(project, options);
+    const res = await onExport(options);
 
     setIsExporting(false);
     setIsSuccess(res.success);
@@ -95,7 +115,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, project, onClo
             <div>
               <h3 className="text-sm font-bold text-slate-100">Export Master Mixdown</h3>
               <p className="text-[11px] text-slate-400">
-                Renders {clipCount} clip{clipCount === 1 ? '' : 's'} through the DSP chain and embeds tags
+                Renders {clipCount} {itemNoun}
+                {clipCount === 1 ? '' : 's'} and embeds the tags below
               </p>
             </div>
           </div>
@@ -147,7 +168,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, project, onClo
                   className="rounded border-slate-700 text-emerald-500 accent-emerald-500"
                 />
                 <span className="font-medium text-slate-200">
-                  Match {project.master_dsp.target_lufs.toFixed(1)} LUFS
+                  Match {targetLufs.toFixed(1)} LUFS
                 </span>
               </label>
               <span className="text-[10px] text-amber-400 font-mono bg-amber-950/40 px-1.5 py-0.5 rounded border border-amber-900/50">
@@ -184,18 +205,18 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, project, onClo
             </div>
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-slate-300">
               <div>
-                <span className="text-slate-500">Title:</span> {project.metadata.title || project.name}
+                <span className="text-slate-500">Title:</span> {metadata.title || defaultFileName}
               </div>
               <div>
                 <span className="text-slate-500">Artist:</span>{' '}
-                {project.metadata.artist || 'Unassigned'}
+                {metadata.artist || 'Unassigned'}
               </div>
               <div>
-                <span className="text-slate-500">ISRC:</span> {project.metadata.isrc || 'None'}
+                <span className="text-slate-500">ISRC:</span> {metadata.isrc || 'None'}
               </div>
               <div>
                 <span className="text-slate-500">Cover:</span>{' '}
-                {project.metadata.cover_art_base64 ? 'Embedded' : 'None'}
+                {metadata.cover_art_base64 ? 'Embedded' : 'None'}
               </div>
             </div>
           </div>
@@ -239,7 +260,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, project, onClo
           {clipCount === 0 && (
             <div className="p-3 rounded-md bg-slate-800/60 border border-slate-700 text-slate-300 flex items-center space-x-2">
               <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
-              <span>Add at least one clip to the timeline before exporting.</span>
+              <span>Add at least one {itemNoun} before exporting.</span>
             </div>
           )}
         </div>

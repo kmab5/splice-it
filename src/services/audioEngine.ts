@@ -33,6 +33,9 @@ export class AudioEngine {
   // Audition preview
   private auditionSource: AudioBufferSourceNode | null = null;
 
+  /** When true, track output skips the EQ and compressor (monitoring only). */
+  private monitorBypass: boolean = false;
+
   private onTimeUpdateCallback: ((timeMs: number) => void) | null = null;
   private animFrameId: number | null = null;
 
@@ -149,6 +152,35 @@ export class AudioEngine {
     }
   }
 
+  /** Node that track output feeds into, honouring the monitor bypass. */
+  private busInput(): AudioNode | null {
+    if (this.monitorBypass) return this.analyserNode;
+    return this.highShelfNode;
+  }
+
+  /**
+   * Route playback around the master EQ and compressor so the chain can be
+   * A/B'd by ear. This affects monitoring only, never the exported file.
+   */
+  public setMonitorBypass(bypass: boolean) {
+    this.monitorBypass = bypass;
+    const target = this.busInput();
+    if (!target) return;
+
+    this.trackNodes.forEach(({ panner }) => {
+      try {
+        panner.disconnect();
+      } catch {
+        // Not connected yet.
+      }
+      panner.connect(target);
+    });
+  }
+
+  public isMonitorBypassed(): boolean {
+    return this.monitorBypass;
+  }
+
   public updateTracks(tracks: TrackState[]) {
     const ctx = this.getAudioContext();
     const hasAnySolo = tracks.some((t) => t.solo);
@@ -159,8 +191,9 @@ export class AudioEngine {
         const gain = ctx.createGain();
         const panner = ctx.createStereoPanner();
         gain.connect(panner);
-        if (this.highShelfNode) {
-          panner.connect(this.highShelfNode);
+        const busTarget = this.busInput();
+        if (busTarget) {
+          panner.connect(busTarget);
         }
         nodeGroup = { gain, panner };
         this.trackNodes.set(index, nodeGroup);
@@ -347,6 +380,87 @@ export class AudioEngine {
       }
       this.auditionSource = null;
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Concat sequence preview
+  // -------------------------------------------------------------------------
+
+  /**
+   * Play an ordered sequence of already-decoded sources back to back.
+   *
+   * `throughMasterChain` mirrors the export setting: with it off the audio goes
+   * straight to the output so the preview matches a plain join.
+   */
+  public playSequence(
+    items: {
+      source_path: string;
+      startMs: number;
+      gain: number;
+      fadeInMs: number;
+      fadeOutMs: number;
+    }[],
+    startMs: number,
+    totalMs: number,
+    throughMasterChain: boolean,
+    onTimeUpdate: (ms: number) => void
+  ) {
+    const ctx = this.getAudioContext();
+    this.stop();
+
+    const destination: AudioNode =
+      throughMasterChain && this.highShelfNode
+        ? this.highShelfNode
+        : this.analyserNode ?? ctx.destination;
+
+    this.isPlaying = true;
+    this.pausedAtMs = startMs;
+    this.totalDurationMs = totalMs;
+    this.startTime = ctx.currentTime - startMs / 1000;
+    this.onTimeUpdateCallback = onTimeUpdate;
+
+    for (const item of items) {
+      const buffer = this.sourceBuffers.get(item.source_path);
+      if (!buffer) continue;
+
+      const itemDurationSec = buffer.duration;
+      const itemEndMs = item.startMs + itemDurationSec * 1000;
+      if (itemEndMs <= startMs) continue;
+
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+
+      const gainNode = ctx.createGain();
+      gainNode.gain.value = item.gain;
+
+      const itemStartSec = this.startTime + item.startMs / 1000;
+      if (item.fadeInMs > 0) {
+        gainNode.gain.setValueAtTime(0, itemStartSec);
+        gainNode.gain.linearRampToValueAtTime(item.gain, itemStartSec + item.fadeInMs / 1000);
+      }
+      if (item.fadeOutMs > 0) {
+        const fadeStart = itemStartSec + itemDurationSec - item.fadeOutMs / 1000;
+        gainNode.gain.setValueAtTime(item.gain, fadeStart);
+        gainNode.gain.linearRampToValueAtTime(0, itemStartSec + itemDurationSec);
+      }
+
+      src.connect(gainNode);
+      gainNode.connect(destination);
+
+      let when = itemStartSec;
+      let offset = 0;
+      if (item.startMs < startMs) {
+        offset = (startMs - item.startMs) / 1000;
+        when = ctx.currentTime;
+      }
+
+      if (offset < itemDurationSec) {
+        src.start(Math.max(ctx.currentTime, when), offset);
+        this.activeSources.push(src);
+      }
+    }
+
+    this.startAnimationLoop();
   }
 
   // -------------------------------------------------------------------------

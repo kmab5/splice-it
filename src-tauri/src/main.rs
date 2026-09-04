@@ -6,7 +6,7 @@ mod dsp;
 mod models;
 
 use commands::{
-    analyze_audio_file, export_project, generate_waveform_peaks, load_audio_metadata,
+    analyze_audio_file, export_concat, export_project, generate_waveform_peaks, load_audio_metadata,
     read_audio_file_bytes, read_text_file, save_audio_metadata, write_text_file,
 };
 
@@ -23,7 +23,8 @@ fn main() {
             read_audio_file_bytes,
             read_text_file,
             write_text_file,
-            export_project
+            export_project,
+            export_concat
         ])
         .run(tauri::generate_context!())
         .expect("error while running Splice It desktop workspace");

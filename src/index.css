@@ -1,1 +1,157 @@
 @import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+   Global surface
+   Tells the browser this is a dark UI (so native widgets and the overscroll
+   area render dark) and paints the document background, which is what showed
+   through as white when a scroll container was pulled past its end.
+--------------------------------------------------------------------------- */
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background-color: #020617; /* slate-950 */
+}
+
+/* Stop the rubber-band / overscroll bounce and the scroll chaining that made
+   an inner panel scroll the page behind it once it hit its end. */
+html,
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+* {
+  overscroll-behavior: contain;
+}
+
+/* ---------------------------------------------------------------------------
+   Scrollbars
+   Replaces the chunky default Windows scrollbars with slim dark ones.
+--------------------------------------------------------------------------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #263449 transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: #263449;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: #3b4d69;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ---------------------------------------------------------------------------
+   Sliders
+   Native range inputs render as large light-grey Windows controls. These are
+   restyled to a thin dark track with a small accent thumb.
+
+   The filled portion of the track uses the box-shadow trick: the thumb casts a
+   very wide shadow to its left, clipped by overflow:hidden on the input. That
+   gives a filled track with no JavaScript.
+
+   Colour comes from --si-accent, set per instance with a Tailwind arbitrary
+   property, e.g. class="si-slider [--si-accent:#10b981]".
+--------------------------------------------------------------------------- */
+input[type="range"].si-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 14px;
+  background: transparent;
+  border-radius: 999px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+input[type="range"].si-slider:focus {
+  outline: none;
+}
+
+input[type="range"].si-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: #1e293b;
+}
+
+input[type="range"].si-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  margin-top: -3.5px;
+  border-radius: 50%;
+  background: var(--si-accent, #10b981);
+  border: 2px solid #0b1220;
+  box-shadow: -1006px 0 0 1000px var(--si-accent, #10b981);
+  transition: transform 0.1s ease;
+}
+
+input[type="range"].si-slider:hover::-webkit-slider-thumb,
+input[type="range"].si-slider:active::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+
+input[type="range"].si-slider:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Firefox */
+input[type="range"].si-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: #1e293b;
+}
+
+input[type="range"].si-slider::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--si-accent, #10b981);
+}
+
+input[type="range"].si-slider::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid #0b1220;
+  background: var(--si-accent, #10b981);
+}
+
+/* ---------------------------------------------------------------------------
+   Number inputs
+   Hide the spinner arrows. They are the control that walked the year field
+   negative, and they look out of place in a dark UI.
+--------------------------------------------------------------------------- */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}

@@ -197,7 +197,7 @@ export const ClipInspector: React.FC<ClipInspectorProps> = ({
               step="0.5"
               value={gainDb}
               onChange={(e) => onUpdateClip(clip.id, { gain: dbToLinear(Number(e.target.value)) })}
-              className="w-full accent-emerald-400 h-1 bg-slate-800 rounded cursor-pointer"
+              className="w-full si-slider [--si-accent:#34d399] h-1 bg-slate-800 rounded cursor-pointer"
             />
           </div>
 
@@ -218,7 +218,7 @@ export const ClipInspector: React.FC<ClipInspectorProps> = ({
               step="20"
               value={clip.fade_in_ms}
               onChange={(e) => onUpdateClip(clip.id, { fade_in_ms: Number(e.target.value) })}
-              className="w-full accent-cyan-400 h-1 bg-slate-800 rounded cursor-pointer"
+              className="w-full si-slider [--si-accent:#22d3ee] h-1 bg-slate-800 rounded cursor-pointer"
             />
           </div>
 
@@ -239,7 +239,7 @@ export const ClipInspector: React.FC<ClipInspectorProps> = ({
               step="20"
               value={clip.fade_out_ms}
               onChange={(e) => onUpdateClip(clip.id, { fade_out_ms: Number(e.target.value) })}
-              className="w-full accent-cyan-400 h-1 bg-slate-800 rounded cursor-pointer"
+              className="w-full si-slider [--si-accent:#22d3ee] h-1 bg-slate-800 rounded cursor-pointer"
             />
           </div>
         </div>

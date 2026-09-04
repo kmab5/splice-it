@@ -478,7 +478,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                     step={1}
                     value={zoom}
                     onChange={(e) => onZoomChange(Number(e.target.value))}
-                    className="flex-1 accent-emerald-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+                    className="flex-1 si-slider [--si-accent:#10b981] h-1.5 bg-slate-800 rounded-lg cursor-pointer"
                   />
 
                   <button

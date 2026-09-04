@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Play,
   Pause,
@@ -8,11 +8,19 @@ import {
   Undo2,
   Redo2,
   PanelRight,
+  LayoutGrid,
+  ListOrdered,
 } from 'lucide-react';
 import { ProjectState } from '../types/project';
 
+export type WorkspaceMode = 'timeline' | 'concat';
+
 interface TopNavbarProps {
   project: ProjectState;
+  mode: WorkspaceMode;
+  onModeChange: (mode: WorkspaceMode) => void;
+  onRenameProject: (name: string) => void;
+  savedPath?: string | null;
   isPlaying: boolean;
   currentTimeMs: number;
   onPlayPause: () => void;
@@ -30,6 +38,10 @@ interface TopNavbarProps {
 
 export const TopNavbar: React.FC<TopNavbarProps> = ({
   project,
+  mode,
+  onModeChange,
+  onRenameProject,
+  savedPath,
   isPlaying,
   currentTimeMs,
   onPlayPause,
@@ -44,6 +56,19 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   isRightSidebarOpen,
   onToggleRightSidebar,
 }) => {
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [draftName, setDraftName] = useState(project.name);
+
+  useEffect(() => {
+    setDraftName(project.name);
+  }, [project.name]);
+
+  const commitName = () => {
+    const cleaned = draftName.replace(/\.sic$/i, '').trim();
+    if (cleaned) onRenameProject(cleaned);
+    setIsEditingName(false);
+  };
+
   // Format timecode: 00:00:00.000 (HH:MM:SS.mmm)
   const formatTimecode = (ms: number): string => {
     const totalSeconds = Math.max(0, ms / 1000);
@@ -60,27 +85,93 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
       id="top-navbar"
       className="h-14 border-b border-slate-800 bg-[#0F172A]/95 backdrop-blur-md flex items-center justify-between px-3 sm:px-4 shrink-0 z-30 select-none gap-2 overflow-x-auto"
     >
-      {/* 1. Left: Brand and Project Title */}
+      {/* 1. Left: Logo, Brand and editable Project Title */}
       <div className="flex items-center gap-2.5 shrink-0">
-        <div className="w-8 h-8 bg-emerald-500 rounded flex items-center justify-center text-slate-950 font-black italic shadow-md shadow-emerald-500/20 shrink-0">
+        <img
+          src="/assets/logo.png"
+          alt="Splice It"
+          className="w-8 h-8 rounded object-cover shadow-md shadow-emerald-500/20 shrink-0"
+          onError={(e) => {
+            // Fall back to the lettermark if the asset is missing.
+            e.currentTarget.style.display = 'none';
+            e.currentTarget.nextElementSibling?.classList.remove('hidden');
+          }}
+        />
+        <div className="hidden w-8 h-8 bg-emerald-500 rounded items-center justify-center text-slate-950 font-black italic shadow-md shrink-0">
           SI
         </div>
-        <div className="flex flex-col">
+
+        <div className="flex flex-col min-w-0">
           <div className="flex items-center gap-1.5">
             <span className="font-semibold text-slate-100 tracking-tight text-xs sm:text-sm">
               Splice It
             </span>
             <span className="text-slate-400 font-mono text-[10px] hidden md:inline">v2.0</span>
           </div>
-          <span className="text-[10px] text-emerald-400/90 font-medium truncate max-w-[110px] sm:max-w-[160px]">
-            {project.name.endsWith('.sic') ? project.name : `${project.name}.sic`}
-          </span>
+
+          {isEditingName ? (
+            <input
+              autoFocus
+              value={draftName}
+              onChange={(e) => setDraftName(e.target.value)}
+              onBlur={commitName}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitName();
+                if (e.key === 'Escape') {
+                  setDraftName(project.name);
+                  setIsEditingName(false);
+                }
+              }}
+              className="text-[11px] bg-slate-800 border border-emerald-500/50 rounded px-1 py-0 text-emerald-300 font-medium w-[150px] focus:outline-none"
+            />
+          ) : (
+            <button
+              onClick={() => {
+                setDraftName(project.name);
+                setIsEditingName(true);
+              }}
+              title={savedPath || 'Not saved yet — click to rename'}
+              className="text-[10px] text-emerald-400/90 hover:text-emerald-300 font-medium truncate max-w-[110px] sm:max-w-[170px] text-left flex items-center gap-1 transition"
+            >
+              <span className="truncate">
+                {project.name.endsWith('.sic') ? project.name : `${project.name}.sic`}
+              </span>
+              {!savedPath && <span className="text-amber-400/80 shrink-0">•</span>}
+            </button>
+          )}
         </div>
+      </div>
+
+      {/* 2. Mode switcher: Timeline editor vs Concat */}
+      <div className="flex items-center gap-0.5 bg-slate-950/80 p-0.5 rounded-lg border border-slate-800 shrink-0">
+        <button
+          onClick={() => onModeChange('timeline')}
+          className={`px-2.5 py-1 rounded-md text-[11px] font-medium flex items-center gap-1.5 transition ${
+            mode === 'timeline'
+              ? 'bg-slate-800 text-emerald-400 shadow-sm'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <LayoutGrid className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Timeline</span>
+        </button>
+        <button
+          onClick={() => onModeChange('concat')}
+          className={`px-2.5 py-1 rounded-md text-[11px] font-medium flex items-center gap-1.5 transition ${
+            mode === 'concat'
+              ? 'bg-slate-800 text-cyan-400 shadow-sm'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <ListOrdered className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Concat</span>
+        </button>
       </div>
 
       {/* 2. Center: Dedicated Transport Bar (Go to Start, Stop, Play, Go to End, Timecode, BPM) */}
       <div
         id="transport-playbar"
+        style={{ display: mode === 'timeline' ? undefined : 'none' }}
         className="flex items-center gap-2 sm:gap-3.5 bg-slate-900/80 px-3 sm:px-4 py-1 rounded-full border border-slate-700/60 shadow-inner shrink-0"
       >
         {/* Go to Start Button */}

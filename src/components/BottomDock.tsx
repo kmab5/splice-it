@@ -21,6 +21,8 @@ interface BottomDockProps {
   onSplitClip: (clipId: string, splitAtMs: number) => void;
   onDeleteClip: (clipId: string) => void;
   onDuplicateClip: (clipId: string) => void;
+  monitorBypass?: boolean;
+  onToggleMonitorBypass?: () => void;
 }
 
 export const BottomDock: React.FC<BottomDockProps> = ({
@@ -39,6 +41,8 @@ export const BottomDock: React.FC<BottomDockProps> = ({
   onSplitClip,
   onDeleteClip,
   onDuplicateClip,
+  monitorBypass,
+  onToggleMonitorBypass,
 }) => {
   const [activeTab, setActiveTab] = useState<'dsp' | 'metadata' | 'clip'>('dsp');
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -126,6 +130,8 @@ export const BottomDock: React.FC<BottomDockProps> = ({
               onUpdateMetadata={onUpdateMetadata}
               activeTab={activeTab}
               onSelectTab={setActiveTab}
+              monitorBypass={monitorBypass}
+              onToggleMonitorBypass={onToggleMonitorBypass}
             />
           )}
 

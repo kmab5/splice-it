@@ -145,3 +145,42 @@ export interface ExportResult {
   format: string;
   message: string;
 }
+
+// ---------------------------------------------------------------------------
+// Concat mode
+// ---------------------------------------------------------------------------
+
+/** One entry in the concat list. Mirrors the Rust `ConcatItemDto`. */
+export interface ConcatItem {
+  id: string;
+  name: string;
+  source_path: string;
+  /** Linear gain for this item only (1.0 = unchanged). */
+  gain: number;
+  /** Silence after this item, in ms. Ignored when crossfade_ms > 0. */
+  gap_after_ms: number;
+  /** Overlap with the next item, in ms. Zero means a hard join. */
+  crossfade_ms: number;
+  /** Cached source length, for the UI running total. */
+  duration_ms: number;
+}
+
+/** Concat workspace state. Kept separate from the timeline so neither disturbs the other. */
+export interface ConcatState {
+  name: string;
+  sample_rate: number;
+  items: ConcatItem[];
+  metadata: MetadataDto;
+  /** Off by default: joining files should not silently re-master them. */
+  apply_master_chain: boolean;
+}
+
+/** Mirrors the Rust `ConcatRequest`. */
+export interface ConcatRequest {
+  name: string;
+  sample_rate: number;
+  items: ConcatItem[];
+  metadata: MetadataDto;
+  apply_master_chain: boolean;
+  master_dsp: MasterDspSettings;
+}

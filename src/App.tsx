@@ -6,11 +6,16 @@ import {
   MasterDspSettings,
   MetadataDto,
   SourceAudioFile,
+  ConcatItem,
+  ConcatState,
+  ExportOptions,
 } from './types/project';
 import { audioEngine } from './services/audioEngine';
 import {
   analyzeAudioFile,
   BROWSER_PATH_PREFIX,
+  exportConcat,
+  exportProject,
   isAudioPath,
   isProjectPath,
   isTauri,
@@ -30,6 +35,8 @@ import { ExportModal } from './components/ExportModal';
 import { RightSidebar } from './components/RightSidebar';
 import { ContextMenu, ContextMenuTarget } from './components/ContextMenu';
 import { TrackColorPicker } from './components/TrackColorPicker';
+import { ConcatWorkspace, computeLayout } from './components/ConcatWorkspace';
+import type { WorkspaceMode } from './components/TopNavbar';
 import { getNonOverlappingStartTime } from './utils/clipCollisions';
 import { getRandomTrackColor } from './utils/trackColors';
 import { Plus, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
@@ -141,6 +148,24 @@ export default function App() {
     null
   );
   const [clipboardClip, setClipboardClip] = useState<ClipState | null>(null);
+
+  // Which workspace is showing. Each mode keeps its own state, so switching
+  // back and forth never disturbs the other one.
+  const [mode, setMode] = useState<WorkspaceMode>('timeline');
+  const [savedPath, setSavedPath] = useState<string | null>(null);
+
+  const [concat, setConcat] = useState<ConcatState>({
+    name: 'Joined Audio',
+    sample_rate: 44100,
+    items: [],
+    metadata: {},
+    apply_master_chain: false,
+  });
+
+  const [isConcatPlaying, setIsConcatPlaying] = useState<boolean>(false);
+  const [concatTimeMs, setConcatTimeMs] = useState<number>(0);
+  const [isConcatExportOpen, setIsConcatExportOpen] = useState<boolean>(false);
+  const [monitorBypass, setMonitorBypass] = useState<boolean>(false);
 
   // Track colour picker state
   const [colorPicker, setColorPicker] = useState<{
@@ -588,6 +613,11 @@ export default function App() {
       if (!path) return;
       try {
         await writeTextFile(path, json);
+        // The title bar used to keep saying "Untitled Project" after a save,
+        // because nothing ever fed the chosen filename back into state.
+        const baseName = (path.split(/[\\/]/).pop() || defaultName).replace(/\.sic$/i, '');
+        setProject((prev) => ({ ...prev, name: baseName }));
+        setSavedPath(path);
       } catch (err) {
         window.alert(`Could not save project: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -650,7 +680,10 @@ export default function App() {
   const handleOpenProjectPath = useCallback(
     async (path: string) => {
       try {
-        applyLoadedProject(JSON.parse(await readTextFile(path)) as ProjectState);
+        const loaded = JSON.parse(await readTextFile(path)) as ProjectState;
+        const baseName = (path.split(/[\\/]/).pop() || 'Untitled').replace(/\.sic$/i, '');
+        applyLoadedProject({ ...loaded, name: loaded.name || baseName });
+        setSavedPath(path);
       } catch {
         window.alert('Failed to open project: invalid or unreadable .sic file.');
       }
@@ -680,6 +713,10 @@ export default function App() {
   // ---------------------------------------------------------------------------
 
   const [isImporting, setIsImporting] = useState<boolean>(false);
+  const modeRef = useRef<WorkspaceMode>('timeline');
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
 
   /**
    * Analyze each picked file in Rust (duration, peaks, embedded tags), then
@@ -723,6 +760,24 @@ export default function App() {
         } catch (err) {
           failed.push(`${path.split(/[\\/]/).pop()}: ${err instanceof Error ? err.message : String(err)}`);
         }
+      }
+
+      if (added.length > 0 && modeRef.current === 'concat') {
+        setConcat((prev) => ({
+          ...prev,
+          items: [
+            ...prev.items,
+            ...added.map<ConcatItem>((source) => ({
+              id: `cat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              name: source.name,
+              source_path: source.path,
+              gain: 1.0,
+              gap_after_ms: 0,
+              crossfade_ms: 0,
+              duration_ms: source.duration_ms,
+            })),
+          ],
+        }));
       }
 
       if (added.length > 0) {
@@ -846,6 +901,102 @@ export default function App() {
       window.alert(`${source.name} is not loaded. Re-import it to audition.`);
     }
   };
+
+  // ---------------------------------------------------------------------------
+  // Concat mode
+  // ---------------------------------------------------------------------------
+
+  const concatLayout = useMemo(() => computeLayout(concat.items), [concat.items]);
+
+  const stopConcatPlayback = useCallback(() => {
+    audioEngine.stop();
+    setIsConcatPlaying(false);
+  }, []);
+
+  const handleConcatPlayPause = useCallback(() => {
+    if (isConcatPlaying) {
+      audioEngine.pause();
+      setIsConcatPlaying(false);
+      return;
+    }
+    if (concat.items.length === 0) return;
+
+    const { starts, totalMs } = computeLayout(concat.items);
+    const scheduled = concat.items.map((item, i) => ({
+      source_path: item.source_path,
+      startMs: starts[i],
+      gain: item.gain,
+      // Mirror the exporter: a crossfade fades this item out and the next in.
+      fadeInMs: i > 0 ? Math.min(concat.items[i - 1].crossfade_ms, item.duration_ms) : 0,
+      fadeOutMs: Math.min(item.crossfade_ms, item.duration_ms),
+    }));
+
+    const startFrom = concatTimeMs >= totalMs ? 0 : concatTimeMs;
+    audioEngine.playSequence(
+      scheduled,
+      startFrom,
+      totalMs,
+      concat.apply_master_chain,
+      (ms) => setConcatTimeMs(ms)
+    );
+    setIsConcatPlaying(true);
+  }, [isConcatPlaying, concat, concatTimeMs]);
+
+  const handleConcatSeek = useCallback(
+    (ms: number) => {
+      const clamped = Math.max(0, Math.min(concatLayout.totalMs, ms));
+      setConcatTimeMs(clamped);
+      if (isConcatPlaying) {
+        audioEngine.stop();
+        setIsConcatPlaying(false);
+      }
+    },
+    [concatLayout.totalMs, isConcatPlaying]
+  );
+
+  /** Files imported while in concat mode are appended to the list automatically
+   *  (see the modeRef check inside addSourcesByPath). */
+  const handleConcatImport = useCallback(
+    () => handleImportRequest(),
+    [handleImportRequest]
+  );
+
+  const concatPoolItems = useMemo(
+    () =>
+      (project.audio_pool || []).map((s) => ({
+        name: s.name,
+        path: s.path,
+        duration_ms: s.duration_ms,
+      })),
+    [project.audio_pool]
+  );
+
+  const handleExportConcat = useCallback(
+    (options: ExportOptions) =>
+      exportConcat(
+        {
+          name: concat.name,
+          sample_rate: concat.sample_rate,
+          items: concat.items,
+          metadata: concat.metadata,
+          apply_master_chain: concat.apply_master_chain,
+          master_dsp: project.master_dsp,
+        },
+        options
+      ),
+    [concat, project.master_dsp]
+  );
+
+  const handleModeChange = useCallback(
+    (next: WorkspaceMode) => {
+      // Stop whichever transport is running before switching.
+      audioEngine.stop();
+      setIsPlaying(false);
+      setIsConcatPlaying(false);
+      setMode(next);
+    },
+    []
+  );
 
   /**
    * Native OS drag-and-drop. Tauri intercepts file drops before the webview
@@ -1039,6 +1190,10 @@ export default function App() {
       {/* 1. Top Navigation Bar: Clean dedicated playbar + tools toggle */}
       <TopNavbar
         project={project}
+        mode={mode}
+        onModeChange={handleModeChange}
+        onRenameProject={(name) => setProject((prev) => ({ ...prev, name }))}
+        savedPath={savedPath}
         isPlaying={isPlaying}
         currentTimeMs={currentTimeMs}
         onPlayPause={handlePlayPause}
@@ -1054,6 +1209,25 @@ export default function App() {
         onToggleRightSidebar={() => setIsRightSidebarOpen((prev) => !prev)}
       />
 
+      {mode === 'concat' ? (
+        <ConcatWorkspace
+          state={concat}
+          onChange={(updater) => setConcat(updater)}
+          onImportRequest={handleConcatImport}
+          isImporting={isImporting}
+          poolItems={concatPoolItems}
+          isPlaying={isConcatPlaying}
+          currentTimeMs={concatTimeMs}
+          onPlayPause={handleConcatPlayPause}
+          onStop={() => {
+            stopConcatPlayback();
+            setConcatTimeMs(0);
+          }}
+          onSeek={handleConcatSeek}
+          onOpenExport={() => setIsConcatExportOpen(true)}
+        />
+      ) : (
+      <>
       {/* 2. Center Workspace: Flexible Layout (Track Headers + Timeline Canvas + Right Sidebar) */}
       <div id="center-workspace" className="flex-1 flex flex-row min-w-0 overflow-hidden relative">
         {/* Left Column: Track Headers (Collapsible & Resizable) */}
@@ -1317,13 +1491,39 @@ export default function App() {
         onSplitClip={handleSplitClip}
         onDeleteClip={handleDeleteClip}
         onDuplicateClip={handleDuplicateClip}
+        monitorBypass={monitorBypass}
+        onToggleMonitorBypass={() =>
+          setMonitorBypass((prev) => {
+            const next = !prev;
+            audioEngine.setMonitorBypass(next);
+            return next;
+          })
+        }
       />
+      </>
+      )}
 
-      {/* 4. Export Master Mixdown Modal */}
+      {/* 4. Export Modals — the same component serves both modes */}
       <ExportModal
         isOpen={isExportModalOpen}
-        project={project}
         onClose={() => setIsExportModalOpen(false)}
+        defaultFileName={`${project.name}_Master`}
+        itemCount={project.clips.length}
+        itemNoun="clip"
+        metadata={project.metadata}
+        targetLufs={project.master_dsp.target_lufs}
+        onExport={(options) => exportProject(project, options)}
+      />
+
+      <ExportModal
+        isOpen={isConcatExportOpen}
+        onClose={() => setIsConcatExportOpen(false)}
+        defaultFileName={concat.name}
+        itemCount={concat.items.length}
+        itemNoun="file"
+        metadata={concat.metadata}
+        targetLufs={project.master_dsp.target_lufs}
+        onExport={handleExportConcat}
       />
 
       {/* 5. Track Colour Picker */}

@@ -204,3 +204,34 @@ impl DecodedAudio {
         (self.frames() as f64 / self.sample_rate as f64) * 1000.0
     }
 }
+
+// ---------------------------------------------------------------------------
+// Concat mode
+// ---------------------------------------------------------------------------
+
+/// One entry in a concatenation list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConcatItemDto {
+    pub id: String,
+    pub name: String,
+    pub source_path: String,
+    /// Linear gain applied to this item only (1.0 = unchanged).
+    pub gain: f32,
+    /// Silence inserted after this item. Ignored when `crossfade_ms` > 0.
+    pub gap_after_ms: f64,
+    /// Overlap with the following item. Zero means a hard butt join.
+    pub crossfade_ms: f64,
+}
+
+/// A full concat job: the ordered list plus output settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConcatRequest {
+    pub name: String,
+    pub sample_rate: u32,
+    pub items: Vec<ConcatItemDto>,
+    pub metadata: MetadataDto,
+    /// Off by default. Joining files should not silently re-master them.
+    pub apply_master_chain: bool,
+    #[serde(default)]
+    pub master_dsp: MasterDspSettings,
+}

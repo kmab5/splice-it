@@ -1,5 +1,6 @@
 import {
   AudioFileInfo,
+  ConcatRequest,
   ExportOptions,
   ExportResult,
   MetadataDto,
@@ -166,6 +167,25 @@ export async function writeTextFile(path: string, contents: string): Promise<voi
 // ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
+
+/** Join an ordered list of files into one output. Desktop only. */
+export async function exportConcat(
+  request: ConcatRequest,
+  options: ExportOptions
+): Promise<{ success: boolean; message: string; result?: ExportResult }> {
+  if (!isTauri()) {
+    return {
+      success: false,
+      message: 'Concat export needs the desktop app, since it reads files from disk.',
+    };
+  }
+  try {
+    const result = await invokeCmd<ExportResult>('export_concat', { request, options });
+    return { success: true, message: result.message, result };
+  } catch (e) {
+    return { success: false, message: e instanceof Error ? e.message : String(e) };
+  }
+}
 
 /**
  * Render the timeline mixdown. In the desktop shell this hands off to the Rust

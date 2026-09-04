@@ -198,7 +198,7 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({
             step="0.02"
             value={track.volume}
             onChange={(e) => onUpdateTrack(index, { volume: Number(e.target.value) })}
-            className="w-full accent-emerald-500 h-1 bg-slate-800 rounded cursor-pointer"
+            className="w-full si-slider [--si-accent:#10b981] h-1 bg-slate-800 rounded cursor-pointer"
             title={`Volume: ${(track.volume * 100).toFixed(0)}%`}
           />
         </div>
@@ -214,7 +214,7 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({
               step="0.05"
               value={track.pan}
               onChange={(e) => onUpdateTrack(index, { pan: Number(e.target.value) })}
-              className="w-12 accent-cyan-500 h-1 bg-slate-800 rounded cursor-pointer"
+              className="w-12 si-slider [--si-accent:#06b6d4] h-1 bg-slate-800 rounded cursor-pointer"
               title={`Pan: ${track.pan === 0 ? 'CTR' : track.pan < 0 ? `L${Math.round(Math.abs(track.pan) * 50)}` : `R${Math.round(track.pan * 50)}`}`}
             />
             <span className="text-[8px]">

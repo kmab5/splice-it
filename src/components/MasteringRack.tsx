@@ -21,6 +21,8 @@ interface MasteringRackProps {
   onUpdateMetadata?: (updates: Partial<MetadataDto>) => void;
   activeTab?: 'dsp' | 'metadata' | 'clip';
   onSelectTab?: (tab: 'dsp' | 'metadata' | 'clip') => void;
+  monitorBypass?: boolean;
+  onToggleMonitorBypass?: () => void;
 }
 
 interface EqParamProps {
@@ -68,6 +70,8 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
   onUpdateMetadata,
   activeTab = 'dsp',
   onSelectTab,
+  monitorBypass = false,
+  onToggleMonitorBypass,
 }) => {
   const eqCanvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -367,6 +371,20 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
         </div>
 
         <div className="p-4 space-y-3.5 flex-1 overflow-y-auto">
+          {/* Monitor A/B — hear the chain in and out without changing settings */}
+          <button
+            onClick={onToggleMonitorBypass}
+            title="Routes playback around the EQ and compressor so you can hear what they are doing. Monitoring only — the export always applies the chain."
+            className={`w-full px-3 py-1.5 rounded-lg border text-[11px] font-semibold flex items-center justify-between transition ${
+              monitorBypass
+                ? 'bg-amber-500/15 border-amber-500/50 text-amber-300'
+                : 'bg-slate-800/70 border-slate-700 text-slate-300 hover:text-white'
+            }`}
+          >
+            <span>{monitorBypass ? 'Chain BYPASSED' : 'Chain Active'}</span>
+            <span className="font-mono text-[10px] opacity-70">A/B</span>
+          </button>
+
           {/* Stereo Width */}
           <div className="flex items-center justify-between">
             <span className="text-xs text-slate-400">Stereo Width</span>
@@ -379,7 +397,7 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
                 step="0.05"
                 value={settings.stereo_width}
                 onChange={(e) => onUpdateSettings({ stereo_width: Number(e.target.value) })}
-                className="w-28 accent-emerald-500 h-1.5 bg-slate-800 rounded-full cursor-pointer"
+                className="w-28 si-slider [--si-accent:#10b981] h-1.5 bg-slate-800 rounded-full cursor-pointer"
               />
               <span className="text-[10px] font-mono text-emerald-400 w-9 text-right font-medium">
                 {Math.round(settings.stereo_width * 100)}%
@@ -399,7 +417,7 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
                 step="0.1"
                 value={settings.limiter_ceiling_db}
                 onChange={(e) => onUpdateSettings({ limiter_ceiling_db: Number(e.target.value) })}
-                className="w-28 accent-rose-500 h-1.5 bg-slate-800 rounded-full cursor-pointer"
+                className="w-28 si-slider [--si-accent:#f43f5e] h-1.5 bg-slate-800 rounded-full cursor-pointer"
               />
               <span className="text-[10px] font-mono text-rose-400 w-12 text-right font-medium">
                 {settings.limiter_ceiling_db.toFixed(1)} dB
@@ -419,7 +437,7 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
                 step="0.5"
                 value={settings.target_lufs}
                 onChange={(e) => onUpdateSettings({ target_lufs: Number(e.target.value) })}
-                className="w-28 accent-slate-400 h-1.5 bg-slate-800 rounded-full cursor-pointer"
+                className="w-28 si-slider [--si-accent:#94a3b8] h-1.5 bg-slate-800 rounded-full cursor-pointer"
               />
               <span className="text-[10px] font-mono text-slate-400 w-9 text-right font-medium">
                 {settings.target_lufs.toFixed(1)}
@@ -445,7 +463,7 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
                 value={settings.comp_threshold_db}
                 onChange={(e) => onUpdateSettings({ comp_threshold_db: Number(e.target.value) })}
                 title="Threshold"
-                className="flex-1 accent-cyan-400 h-1 bg-slate-800 rounded cursor-pointer"
+                className="flex-1 si-slider [--si-accent:#22d3ee] h-1 bg-slate-800 rounded cursor-pointer"
               />
               <input
                 id="input-comp-ratio"
@@ -456,7 +474,7 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
                 value={settings.comp_ratio}
                 onChange={(e) => onUpdateSettings({ comp_ratio: Number(e.target.value) })}
                 title="Ratio"
-                className="flex-1 accent-cyan-400 h-1 bg-slate-800 rounded cursor-pointer"
+                className="flex-1 si-slider [--si-accent:#22d3ee] h-1 bg-slate-800 rounded cursor-pointer"
               />
             </div>
           </div>
@@ -521,7 +539,7 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
               min={2000}
               max={20000}
               step={100}
-              accent="accent-emerald-500"
+              accent="si-slider [--si-accent:#10b981]"
               display={
                 settings.eq_high_cut_hz >= 1000
                   ? `${(settings.eq_high_cut_hz / 1000).toFixed(1)}k`
@@ -535,7 +553,7 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
               min={-12}
               max={6}
               step={0.1}
-              accent="accent-emerald-500"
+              accent="si-slider [--si-accent:#10b981]"
               display={`${settings.eq_high_cut_gain_db > 0 ? '+' : ''}${settings.eq_high_cut_gain_db.toFixed(1)}dB`}
               onChange={(v) => onUpdateSettings({ eq_high_cut_gain_db: v })}
             />
@@ -552,7 +570,7 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
               min={60}
               max={2000}
               step={5}
-              accent="accent-cyan-400"
+              accent="si-slider [--si-accent:#22d3ee]"
               display={`${settings.eq_mud_scoop_hz}Hz`}
               onChange={(v) => onUpdateSettings({ eq_mud_scoop_hz: v })}
             />
@@ -562,7 +580,7 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
               min={-12}
               max={6}
               step={0.1}
-              accent="accent-cyan-400"
+              accent="si-slider [--si-accent:#22d3ee]"
               display={`${settings.eq_mud_scoop_gain_db > 0 ? '+' : ''}${settings.eq_mud_scoop_gain_db.toFixed(1)}dB`}
               onChange={(v) => onUpdateSettings({ eq_mud_scoop_gain_db: v })}
             />
@@ -572,7 +590,7 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
               min={0.3}
               max={8}
               step={0.1}
-              accent="accent-cyan-400"
+              accent="si-slider [--si-accent:#22d3ee]"
               display={settings.eq_mud_scoop_q.toFixed(2)}
               onChange={(v) => onUpdateSettings({ eq_mud_scoop_q: v })}
             />
