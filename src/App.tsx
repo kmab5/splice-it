@@ -11,6 +11,8 @@ import { audioEngine } from './services/audioEngine';
 import {
   analyzeAudioFile,
   BROWSER_PATH_PREFIX,
+  isAudioPath,
+  isProjectPath,
   isTauri,
   pickAudioFiles,
   pickProjectFile,
@@ -27,6 +29,7 @@ import { BottomDock } from './components/BottomDock';
 import { ExportModal } from './components/ExportModal';
 import { RightSidebar } from './components/RightSidebar';
 import { ContextMenu, ContextMenuTarget } from './components/ContextMenu';
+import { TrackColorPicker } from './components/TrackColorPicker';
 import { getNonOverlappingStartTime } from './utils/clipCollisions';
 import { getRandomTrackColor } from './utils/trackColors';
 import { Plus, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
@@ -138,6 +141,15 @@ export default function App() {
     null
   );
   const [clipboardClip, setClipboardClip] = useState<ClipState | null>(null);
+
+  // Track colour picker state
+  const [colorPicker, setColorPicker] = useState<{
+    trackIndex: number;
+    anchor: DOMRect | null;
+  } | null>(null);
+
+  // Native OS file drag-and-drop state
+  const [isFileDragOver, setIsFileDragOver] = useState<boolean>(false);
 
   // Context Menu state
   const [contextMenu, setContextMenu] = useState<{
@@ -296,6 +308,16 @@ export default function App() {
       return { ...prev, tracks: newTracks };
     });
   };
+
+  /** History is recorded once when the picker opens, not on every colour tweak. */
+  const handleOpenColorPicker = useCallback(
+    (index: number, anchor?: DOMRect) => {
+      pushHistory(project);
+      setColorPicker({ trackIndex: index, anchor: anchor ?? null });
+      setSelectedTrackIndex(index);
+    },
+    [project, pushHistory]
+  );
 
   const handleAddTrack = () => {
     pushHistory(project);
@@ -625,6 +647,17 @@ export default function App() {
     [project, pushHistory, handleStop, hydrateSources]
   );
 
+  const handleOpenProjectPath = useCallback(
+    async (path: string) => {
+      try {
+        applyLoadedProject(JSON.parse(await readTextFile(path)) as ProjectState);
+      } catch {
+        window.alert('Failed to open project: invalid or unreadable .sic file.');
+      }
+    },
+    [applyLoadedProject]
+  );
+
   const handleOpenProject = useCallback(
     async (file?: File) => {
       try {
@@ -634,12 +667,12 @@ export default function App() {
         }
         const path = await pickProjectFile();
         if (!path) return;
-        applyLoadedProject(JSON.parse(await readTextFile(path)) as ProjectState);
+        await handleOpenProjectPath(path);
       } catch {
         window.alert('Failed to parse project file: invalid JSON structure.');
       }
     },
-    [applyLoadedProject]
+    [applyLoadedProject, handleOpenProjectPath]
   );
 
   // ---------------------------------------------------------------------------
@@ -814,6 +847,67 @@ export default function App() {
     }
   };
 
+  /**
+   * Native OS drag-and-drop. Tauri intercepts file drops before the webview
+   * sees them, so the HTML drag events in the sidebar never fire in the desktop
+   * build. This listens to Tauri's own event instead.
+   */
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+        const un = await getCurrentWebview().onDragDropEvent((event) => {
+          const payload = event.payload as { type: string; paths?: string[] };
+          // Tauri 2.0 used dragEnter/dragOver/dragLeave; 2.1+ uses enter/over/leave.
+          const kind = payload.type.replace('drag', '').toLowerCase();
+
+          if (kind === 'enter' || kind === 'over') {
+            setIsFileDragOver(true);
+            return;
+          }
+          if (kind === 'leave') {
+            setIsFileDragOver(false);
+            return;
+          }
+          if (kind !== 'drop') return;
+
+          setIsFileDragOver(false);
+          const paths = payload.paths || [];
+          if (paths.length === 0) return;
+
+          // A dropped project file opens the project instead of importing audio.
+          const projectFile = paths.find(isProjectPath);
+          if (projectFile && paths.length === 1) {
+            void handleOpenProjectPath(projectFile);
+            return;
+          }
+
+          const audioPaths = paths.filter(isAudioPath);
+          if (audioPaths.length > 0) {
+            void addSourcesByPath(audioPaths);
+          } else {
+            window.alert('Only audio files can be imported into the pool.');
+          }
+        });
+
+        if (cancelled) un();
+        else unlisten = un;
+      } catch (err) {
+        console.warn('Native drag-and-drop unavailable:', err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [addSourcesByPath, handleOpenProjectPath]);
+
   // Keyboard Shortcuts (Undo, Redo, Space, Copy, Paste, Delete, Home, End)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -968,11 +1062,13 @@ export default function App() {
           style={{ width: isTrackAreaCollapsed ? '52px' : `${trackHeaderWidth}px` }}
           className="bg-[#0F172A] border-r border-slate-800 flex flex-col shrink-0 z-10 select-none transition-[width] duration-150"
           onContextMenu={(e) => {
+            // Individual TrackHeaders stop propagation and report their own
+            // index; reaching here means the empty space below the list.
             e.preventDefault();
             setContextMenu({
               x: e.clientX,
               y: e.clientY,
-              target: { type: 'track', clickTimeMs: currentTimeMs },
+              target: { type: 'canvas', clickTimeMs: currentTimeMs },
             });
           }}
         >
@@ -1036,6 +1132,14 @@ export default function App() {
                 onSelectTrack={(tIdx) => setSelectedTrackIndex(tIdx)}
                 onUpdateTrack={handleUpdateTrack}
                 onDeleteTrack={() => handleDeleteTrack(track.id)}
+                onOpenColorPicker={handleOpenColorPicker}
+                onContextMenu={(trackIdx, clientX, clientY) =>
+                  setContextMenu({
+                    x: clientX,
+                    y: clientY,
+                    target: { type: 'track', trackIndex: trackIdx, clickTimeMs: currentTimeMs },
+                  })
+                }
               />
             ))}
 
@@ -1222,7 +1326,35 @@ export default function App() {
         onClose={() => setIsExportModalOpen(false)}
       />
 
-      {/* 5. Custom Context Menu for Track & Clip operations */}
+      {/* 5. Track Colour Picker */}
+      {colorPicker && project.tracks[colorPicker.trackIndex] && (
+        <TrackColorPicker
+          isOpen
+          currentColor={project.tracks[colorPicker.trackIndex].color}
+          trackName={project.tracks[colorPicker.trackIndex].name}
+          trackIndex={colorPicker.trackIndex}
+          allTracks={project.tracks}
+          anchorRect={colorPicker.anchor}
+          onClose={() => setColorPicker(null)}
+          onSelectColor={(color) =>
+            handleUpdateTrack(colorPicker.trackIndex, { color })
+          }
+        />
+      )}
+
+      {/* 6. Native OS file drop overlay */}
+      {isFileDragOver && (
+        <div className="fixed inset-0 z-[70] bg-slate-950/70 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+          <div className="border-2 border-dashed border-cyan-400 rounded-2xl px-10 py-8 text-center bg-slate-900/80 shadow-2xl">
+            <div className="text-sm font-semibold text-cyan-300">Drop audio files to import</div>
+            <div className="text-[11px] text-slate-400 mt-1">
+              WAV, MP3, FLAC, OGG, AAC &middot; or a .sic project to open it
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 7. Custom Context Menu for Track & Clip operations */}
       {contextMenu && (
         <ContextMenu
           x={contextMenu.x}
@@ -1247,6 +1379,7 @@ export default function App() {
           onPasteTrack={handlePasteTrack}
           onDuplicateTrack={handleDuplicateTrack}
           onDeleteTrack={handleDeleteTrack}
+          onChangeTrackColor={(trackIdx) => handleOpenColorPicker(trackIdx)}
           onAddTrack={handleAddTrack}
         />
       )}

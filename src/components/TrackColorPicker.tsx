@@ -54,11 +54,13 @@ export const TrackColorPicker: React.FC<TrackColorPickerProps> = ({
 
   if (!isOpen) return null;
 
-  const handleHexChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value;
-    setHexInput(val);
-    if (/^#[0-9A-Fa-f]{6}$/.test(val) || /^#[0-9A-Fa-f]{3}$/.test(val)) {
-      onSelectColor(val);
+  /** Accepts hex with or without a leading '#'; commits only when valid. */
+  const handleHexChange = (raw: string) => {
+    const cleaned = raw.replace(/[^0-9A-Fa-f]/g, '').slice(0, 6);
+    const withHash = `#${cleaned}`;
+    setHexInput(withHash);
+    if (/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(withHash)) {
+      onSelectColor(withHash);
     }
   };
 
@@ -185,7 +187,8 @@ export const TrackColorPicker: React.FC<TrackColorPickerProps> = ({
                 setHexInput(e.target.value);
                 onSelectColor(e.target.value);
               }}
-              className="absolute inset-0 opacity-0 pointer-events-none w-px h-px"
+              className="absolute bottom-0 left-0 w-px h-px opacity-0"
+              tabIndex={-1}
             />
           </div>
 
@@ -195,7 +198,7 @@ export const TrackColorPicker: React.FC<TrackColorPickerProps> = ({
             <input
               type="text"
               value={hexInput.replace('#', '')}
-              onChange={(e) => handleHexChange({ ...e, target: { ...e.target, value: `#${e.target.value}` } })}
+              onChange={(e) => handleHexChange(e.target.value)}
               placeholder="10b981"
               maxLength={7}
               className="w-full bg-transparent text-slate-200 font-mono text-xs px-1 focus:outline-none uppercase"

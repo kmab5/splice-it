@@ -33,7 +33,21 @@ async function invokeCmd<T>(cmd: string, args?: Record<string, unknown>): Promis
 // Native dialogs
 // ---------------------------------------------------------------------------
 
-const AUDIO_EXTENSIONS = ['wav', 'mp3', 'flac', 'ogg', 'oga', 'm4a', 'aac', 'aiff', 'aif'];
+export const AUDIO_EXTENSIONS = ['wav', 'mp3', 'flac', 'ogg', 'oga', 'm4a', 'aac', 'aiff', 'aif'];
+
+export const PROJECT_EXTENSIONS = ['sic', 'audioproj'];
+
+function extensionOf(path: string): string {
+  return (path.split('.').pop() || '').toLowerCase();
+}
+
+export function isAudioPath(path: string): boolean {
+  return AUDIO_EXTENSIONS.includes(extensionOf(path));
+}
+
+export function isProjectPath(path: string): boolean {
+  return PROJECT_EXTENSIONS.includes(extensionOf(path));
+}
 
 /**
  * Native multi-select audio picker. Returns absolute paths, or null when the

@@ -12,6 +12,10 @@ interface TrackHeaderProps {
   onSelectTrack?: (index: number) => void;
   onUpdateTrack: (index: number, updates: Partial<TrackState>) => void;
   onDeleteTrack: (index: number) => void;
+  /** Opens the colour picker, anchored to the swatch that was clicked. */
+  onOpenColorPicker?: (index: number, anchor: DOMRect) => void;
+  /** Right-click on this specific header, so the menu knows which track it is. */
+  onContextMenu?: (index: number, clientX: number, clientY: number) => void;
 }
 
 export const TrackHeader: React.FC<TrackHeaderProps> = ({
@@ -22,10 +26,27 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({
   onSelectTrack,
   onUpdateTrack,
   onDeleteTrack,
+  onOpenColorPicker,
+  onContextMenu,
 }) => {
   const dbValue = linearToDb(track.volume);
   const formattedDb = dbValue <= -90 ? '-∞' : `${dbValue >= 0 ? '+' : ''}${dbValue.toFixed(1)}dB`;
   const trackColor = track.color || '#10b981';
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    // Stop the parent column handler from firing: it has no idea which track
+    // was clicked, which is why Delete Track used to do nothing from here.
+    e.preventDefault();
+    e.stopPropagation();
+    onSelectTrack?.(index);
+    onContextMenu?.(index, e.clientX, e.clientY);
+  };
+
+  const openColorPicker = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onOpenColorPicker?.(index, e.currentTarget.getBoundingClientRect());
+  };
 
   // Collapsed Mode: Strictly display only the track color block (User request: "when collapsed only show the color of the track")
   if (isCollapsed) {
@@ -33,7 +54,9 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({
       <div
         id={`track-header-collapsed-${index}`}
         onClick={() => onSelectTrack?.(index)}
-        title={`Track ${index + 1}: ${track.name} (Click to select)`}
+        onDoubleClick={openColorPicker}
+        onContextMenu={handleContextMenu}
+        title={`Track ${index + 1}: ${track.name} (double-click to change colour)`}
         className={`h-24 w-full border-b border-slate-800/80 p-1.5 flex flex-col items-center justify-center cursor-pointer transition-all select-none ${
           isSelected
             ? 'bg-slate-800/90 ring-1 ring-inset ring-white/60'
@@ -74,6 +97,7 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({
     <div
       id={`track-header-${index}`}
       onClick={() => onSelectTrack?.(index)}
+      onContextMenu={handleContextMenu}
       style={{
         borderLeft: `4px solid ${trackColor}`,
         backgroundColor: isSelected
@@ -91,11 +115,13 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({
       {/* Top Row: Color Pip + Track Number & Name + Delete + Mute & Solo */}
       <div className="flex items-center justify-between" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center gap-1.5 min-w-0 flex-1">
-          {/* Track Color Swatch */}
-          <div
-            className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm"
+          {/* Track Colour Swatch — opens the colour picker */}
+          <button
+            type="button"
+            onClick={openColorPicker}
+            className="w-3 h-3 rounded-full shrink-0 shadow-sm ring-1 ring-black/30 hover:ring-2 hover:ring-white/70 hover:scale-110 transition-all cursor-pointer"
             style={{ backgroundColor: trackColor }}
-            title={`Color: ${trackColor}`}
+            title={`Colour: ${trackColor} (click to change)`}
           />
           <span className="text-[10px] font-mono text-slate-400 font-bold">
             {String(index + 1).padStart(2, '0')}:

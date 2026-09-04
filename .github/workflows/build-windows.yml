@@ -1,0 +1,68 @@
+name: Build Windows Installers
+
+# Cross-compiling a Tauri app from Linux to Windows is impractical (the MSI and
+# NSIS bundlers need Windows tooling), so the build runs on a Windows runner
+# instead. Trigger it by hand from the Actions tab, or push a v* tag.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      # Caches src-tauri/target. The first run compiles ~500 crates and takes
+      # roughly 10-15 minutes; later runs are usually 2-4.
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Type-check frontend
+        run: npm run lint
+
+      - name: Build Tauri app
+        run: npm run tauri:build
+
+      - name: Upload MSI installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: splice-it-msi
+          path: src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: warn
+
+      - name: Upload NSIS setup executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: splice-it-setup-exe
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: warn
+
+      # Portable build: the raw exe with no installer. Useful for quick testing,
+      # but it must sit next to the WebView2 runtime already present on Windows.
+      - name: Upload portable executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: splice-it-portable-exe
+          path: src-tauri/target/release/splice-it.exe
+          if-no-files-found: warn

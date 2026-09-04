@@ -6,7 +6,7 @@ use base64::Engine;
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::picture::{MimeType, Picture, PictureType};
-use lofty::tag::{Accessor, ItemKey, Tag, TagExt};
+use lofty::tag::{Accessor, ItemKey, Tag};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;

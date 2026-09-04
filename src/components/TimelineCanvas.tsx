@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { ClipState, TrackState } from '../types/project';
 import { getNonOverlappingStartTime, getNonOverlappingTrimBounds } from '../utils/clipCollisions';
 import { hexToRgba } from '../utils/trackColors';
-import { SnapResult } from '../utils/timelineSnap';
+import { getPlayheadSnapTime, SnapResult } from '../utils/timelineSnap';
 
 interface TimelineCanvasProps {
   tracks: TrackState[];
@@ -568,8 +568,10 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
     const deltaMs = (deltaX / zoom) * 1000;
 
     if (dragState.mode === 'scrub') {
-      const newTimeMs = Math.max(0, (currentMouseX / zoom) * 1000);
-      onSeek(newTimeMs);
+      const rawTimeMs = Math.max(0, (currentMouseX / zoom) * 1000);
+      const snap = getPlayheadSnapTime(rawTimeMs, clips, zoom, snapToGrid, bpm, 12);
+      setPlayheadSnapInfo(snap.isSnapped ? snap : null);
+      onSeek(snap.snappedTimeMs);
     } else if (dragState.mode === 'move') {
       let proposedStartMs = Math.max(0, dragState.initialClipStartMs + deltaMs);
       proposedStartMs = getSnapTimeMs(proposedStartMs);
@@ -622,6 +624,7 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
 
   const handleMouseUp = () => {
     setDragState(null);
+    setPlayheadSnapInfo(null);
   };
 
   // Mouse Wheel zooming with Ctrl/Cmd key

@@ -9,6 +9,7 @@ import {
   Plus,
   Music2,
   Volume2,
+  Palette,
 } from 'lucide-react';
 import { TrackState, ClipState } from '../types/project';
 
@@ -38,6 +39,7 @@ interface ContextMenuProps {
   onPasteTrack?: () => void;
   onDuplicateTrack?: (trackIndex: number) => void;
   onDeleteTrack?: (trackId: string) => void;
+  onChangeTrackColor?: (trackIndex: number) => void;
   onAddTrack?: () => void;
 }
 
@@ -60,6 +62,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   onPasteTrack,
   onDuplicateTrack,
   onDeleteTrack,
+  onChangeTrackColor,
   onAddTrack,
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -198,6 +201,24 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
             <span className="flex items-center gap-2">
               <CopyPlus className="w-3.5 h-3.5 text-emerald-400" /> Duplicate Track
             </span>
+          </button>
+
+          <button
+            onClick={() => {
+              if (target.trackIndex !== undefined) onChangeTrackColor?.(target.trackIndex);
+              onClose();
+            }}
+            className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800/80 flex items-center justify-between text-slate-200 hover:text-white transition"
+          >
+            <span className="flex items-center gap-2">
+              <Palette className="w-3.5 h-3.5 text-emerald-400" /> Change Colour
+            </span>
+            {selectedTrack && (
+              <span
+                className="w-2.5 h-2.5 rounded-full ring-1 ring-black/40"
+                style={{ backgroundColor: selectedTrack.color }}
+              />
+            )}
           </button>
 
           {selectedTrack && (

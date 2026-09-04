@@ -26,11 +26,6 @@ impl BiquadFilter {
         }
     }
 
-    pub fn reset(&mut self) {
-        self.z1 = 0.0;
-        self.z2 = 0.0;
-    }
-
     /// Peaking / Bell EQ filter (used for scooping muddy low-mids e.g. 200 Hz - 400 Hz)
     pub fn set_peaking(&mut self, sample_rate: f32, freq: f32, q: f32, gain_db: f32) {
         let w0 = 2.0 * PI * (freq.clamp(20.0, sample_rate * 0.49) / sample_rate);
