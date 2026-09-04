@@ -1,0 +1,6 @@
+{
+  "name": "Splice It",
+  "description": "High-performance desktop audio workspace with multi-track timeline, sample-accurate DSP mastering chain, and comprehensive metadata editor.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
