@@ -1,144 +1,119 @@
 # Splice It — Change Log
 
-## Turn 6 — v0.2.6 — Step 3: Workspace correctness, persistence and concat depth
+## Turn 7 — v0.2.7 — Step 4: Timeline rendering at scale
 
-### Versioning
-
-From now on every edit bumps the version in all three places at once, keyed to
-the turn number as you set it:
-
-| File | Field |
-|---|---|
-| `package.json` | `version` |
-| `src-tauri/Cargo.toml` | `[package] version` |
-| `src-tauri/tauri.conf.json` | `version` |
-
-All three are now **0.2.6**. To stop them drifting apart, `vite.config.ts` reads
-`package.json` at build time and injects `__APP_VERSION__`, which
-`src/version.ts` re-exports as `APP_VERSION`. The navbar shows the real version
-instead of the hardcoded "v2.0", and saved `.sic` files record the app version
-that wrote them for future migrations.
+Versions bumped to **0.2.7** in `package.json`, `src-tauri/Cargo.toml` and
+`src-tauri/tauri.conf.json`.
 
 ---
 
-### Why the sad face appears when zooming into long files
+### The sad face is gone, properly
 
-That is Chromium's broken-content placeholder for a `<canvas>` it **refused to
-allocate**. The timeline canvas is currently as wide as the entire project:
+The timeline canvas used to be as wide as the entire project. At 400 px/s a
+ten-minute file asked for a **600,000px** canvas, and on a HiDPI display the
+backing store was that again. Browsers refuse anything much past ~16,384px per
+side, and a refused canvas renders as the broken-content placeholder.
+
+Both the canvas and the ruler are now **virtualized**: the elements are only as
+wide as the visible window, pinned in place with `position: sticky`, and the
+drawing is translated by the scroll offset. Every coordinate in the drawing code
+is still in absolute timeline pixels, so the logic did not have to change — only
+where the origin sits.
 
 ```
-timelineWidth = (durationMs / 1000) * zoom * 1.25
+10 min project @400 px/s, dpr 2:
+  before : 600,000 px   -> refused by the browser
+  after  :   2,400 px   -> viewport only
 ```
 
-A 10-minute file at 250 px/s asks for a 187,500px canvas — and on a HiDPI
-display the backing store is that again multiplied by the device pixel ratio.
-Chromium caps a canvas at roughly 16,384px per side on many GPUs and refuses
-anything larger, so the element renders as the sad face with the page grid
-showing through.
+**The zoom ceiling from last turn is removed**, along with the amber notice.
+The maximum is now 400 px/s at any project length, limited by usefulness rather
+than by the renderer.
 
-**Yes, it is fixable, and properly.** The real fix is to stop drawing the whole
-project and draw only the visible window, translating by the scroll offset. That
-removes the ceiling entirely and also makes scrolling cheaper on long projects.
-It touches the canvas, the ruler, and the scroll container together, so it is
-**Step 4** rather than being rushed in alongside this batch.
+Details that came with it:
 
-For now the app no longer breaks: zoom is clamped to whatever keeps the canvas
-inside a safe budget, and when you hit that ceiling a small amber notice
-explains why rather than leaving you with a broken graphic. On a long project
-the ceiling is genuinely restrictive, which is exactly why Step 4 is next.
+- Grid lines, clips, and waveforms outside the window are skipped entirely, so
+  drawing cost tracks the size of the window rather than the length of the
+  project. Scrolling a three-hour timeline costs the same as a three-second one.
+- Scroll events are coalesced to one state update per animation frame.
+- Drawing moved to `useLayoutEffect` so the repaint lands in the same frame as
+  the scroll position, instead of trailing it by one.
+- Pointer coordinates add the scroll offset before hit-testing, so clip
+  selection, trimming, and the context menu still work at any scroll position.
+- The ruler gained finer tick steps (down to 0.1s) with sub-second labels, since
+  it is now possible to zoom in far enough to need them.
 
----
+### Waveform detail follows zoom
 
-### Step 3 — what shipped
+Envelopes were a fixed 1200 buckets per source, so a ten-minute file got the
+same detail as a ten-second one and turned into mush when zoomed in.
 
-**Space is scoped to the visible workspace.** It always called the timeline
-transport, so pressing it in concat mode started timeline playback. It now
-drives whichever view is on screen, and the timeline-only keys (S to split,
-Delete, Home, End) no longer fire at all in concat mode.
+`analyze_audio_file` now takes `samples_per_peak` instead of a bucket count, so
+resolution is fixed **per unit of time**:
 
-**Ctrl+S saves as a project.** Ctrl+Shift+S is Save As, Ctrl+O opens.
+```
+     10s ->    1,722 buckets, 172 per second
+    600s ->  103,359 buckets, 172 per second
+  10800s ->  400,235 buckets,  37 per second  (capped)
+```
 
-**Saving no longer re-prompts for a location.** Once a project has a path — from
-a save or an open — Ctrl+S writes straight to that file. The dialog now only
-appears for a project that has never been saved, or for an explicit Save As.
+A hard cap of 400,000 buckets keeps a very long file from allocating without
+limit; a three-hour file degrades gracefully to 37 per second.
 
-**Auto-save**, configurable in the new Settings dialog (gear icon in the navbar):
-on/off and an interval from 1 to 30 minutes, default 5. It only ever overwrites
-a file you already chose — it will not invent a filename or pop a dialog while
-you are working, so it stays dormant until the first manual save. Settings
-persist locally, and the dialog shows the target path and last auto-save time.
+The renderer draws one column every 1.5px across the visible part of each clip,
+taking the loudest peak in the slice of source that column covers. Detail now
+improves as you zoom instead of being frozen at import time. When one column
+covers a large span, the scan is strided to a bounded number of samples so the
+frame cost stays flat.
 
-Unsaved changes are tracked by comparing against a snapshot of what was last
-written, rather than a "something changed" flag. That matters because saving
-updates the project name, which with a naive flag would immediately re-dirty the
-document it had just saved. An amber dot next to the project name marks unsaved
-work.
+**Project files did not grow.** Envelopes are derived data and are now large, so
+they are stripped when writing a `.sic` and rebuilt from the audio on load —
+`hydrateSources` re-analyses any source that comes back without one.
 
-**Concat mode is saved into the `.sic` file** (was on the open list). One
-document now carries both workspaces; the Rust exporter ignores the extra field.
+### Gain reduction metering
 
-**Concat: detailed sequence strip.** The plain progress bar is now a to-scale
-map of the output — one block per file, name shown when there is room, hatched
-cyan at the tail of any block that crossfades, hatched amber spans where there
-are gaps, and a playhead. Clicking a block selects it; clicking the strip scrubs.
-
-**Concat: randomize order.** Fisher-Yates shuffle, in the toolbar and the
-context menu.
-
-**Concat: metadata editor as a bottom tab.** The tag drawer is now a proper
-resizable, collapsible bottom dock with two tabs — Output Tags (the full editor)
-and Selected Item (name, gain, gap, crossfade). The duplicated item controls
-were removed from the right sidebar, which now covers output settings only.
-
-**Concat: context menu.** Right-click a row for Move to Top/Bottom, Duplicate,
-Add 0.5s Gap, Crossfade 0.5s Into Next, and Remove. Right-click empty space for
-Add Files, Randomize, Reverse, and Clear List.
-
-**Metadata is editable in the export dialog.** Title, artist, album, genre, year
-and ISRC can be set without leaving the dialog, in both modes. Edits write back
-to the project or concat state, so they are not lost when the dialog closes.
+The compressor and limiter had controls but no feedback, so there was no way to
+tell whether they were doing anything. The mastering rack now has a live **GR**
+meter reading actual gain reduction from the engine, full scale at 20 dB, with a
+numeric readout. Combined with the A/B bypass button, the dynamics section is
+finally legible.
 
 ---
 
 ### Files changed
 
-`package.json`, `vite.config.ts`, `src-tauri/Cargo.toml`,
-`src-tauri/tauri.conf.json`, `src/version.ts` (new),
-`src/services/settings.ts` (new), `src/components/SettingsModal.tsx` (new),
-`src/App.tsx`, `src/components/TopNavbar.tsx`,
-`src/components/ConcatWorkspace.tsx`, `src/components/ExportModal.tsx`,
-`src/types/project.ts`.
+`package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`,
+`src-tauri/src/commands.rs`, `src/App.tsx`,
+`src/components/TimelineCanvas.tsx`, `src/components/TimelineRuler.tsx`,
+`src/components/MasteringRack.tsx`, `src/components/BottomDock.tsx`,
+`src/components/RightSidebar.tsx`, `src/services/audioEngine.ts`,
+`src/services/ipc.ts`.
 
-No Rust source changed this turn beyond the version bump, so `cargo check`
-should still be clean. `tsc --noEmit` passes and `vite build` succeeds.
+`tsc --noEmit` passes, `vite build` succeeds, and the numbers above were
+computed from the shipped formulas. The Rust change is contained to
+`analyze_audio_file`, so please send me any `cargo check` output.
 
 ---
 
 ### Worth testing
 
-- Save with Ctrl+S, edit something, Ctrl+S again — the second save should write
-  silently with no dialog, and the amber dot should clear.
-- Open Settings, set auto-save to 1 minute, make an edit, and wait.
-- Press Space in concat mode and confirm the timeline stays silent.
-- Add a crossfade and watch the hatched region appear on the sequence strip.
+- Import a long file (5 minutes or more), place it, and zoom all the way in.
+  No sad face, and the waveform should sharpen rather than blur.
+- Scroll a long project from end to end and check that clip selection, trimming,
+  and the playhead all land where you click.
+- Save a project with several long sources, then reopen it — the `.sic` should
+  be small, and waveforms should reappear a moment after loading.
+- Play something with the compressor threshold pulled down and watch the GR
+  meter move.
 
 ---
 
 ## Remaining plan
 
-### Step 4 — Timeline rendering at scale
-- **Virtualize the timeline canvas**: draw only the visible window and translate
-  by the scroll offset, in the canvas and the ruler together. Removes the zoom
-  ceiling and the sad face for good.
-- **Zoom-aware peak resolution** (open item): peaks are a fixed 1200 buckets per
-  source, so a long file looks coarse when zoomed. Re-analyze at higher
-  resolution for the visible range.
-- Gain-reduction metering for the compressor and limiter, which currently have
-  controls but no feedback.
-
 ### Step 5 — Export formats
 - FLAC encoding, MP3 via `mp3lame-encoder`, and format selection in both modes.
-- Per-format bitrate and compression options.
+- Per-format bitrate and compression-level options.
+- Format-aware file extension in the save dialog.
 
 ### Step 6 — Audio quality and polish
 - **Windowed-sinc resampling** (open item) to replace linear interpolation for
@@ -147,3 +122,5 @@ should still be clean. `tsc --noEmit` passes and `vite build` succeeds.
 - Optional loudness matching across concat items, so a joined compilation sits
   at an even level.
 - Recent-projects list and reopening the last project on launch.
+- Waveform analysis moved off the import path so a large batch import does not
+  block the UI.

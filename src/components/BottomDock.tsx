@@ -13,6 +13,7 @@ interface BottomDockProps {
   currentTimeMs: number;
   liveLufs: number;
   livePeak: number;
+  liveGainReduction?: number;
   height: number;
   onHeightChange: (newHeight: number) => void;
   onUpdateDspSettings: (updates: Partial<MasterDspSettings>) => void;
@@ -33,6 +34,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
   currentTimeMs,
   liveLufs,
   livePeak,
+  liveGainReduction = 0,
   height,
   onHeightChange,
   onUpdateDspSettings,
@@ -125,6 +127,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
               settings={settings}
               liveLufs={liveLufs}
               livePeak={livePeak}
+              liveGainReduction={liveGainReduction}
               onUpdateSettings={onUpdateDspSettings}
               metadata={metadata}
               onUpdateMetadata={onUpdateMetadata}

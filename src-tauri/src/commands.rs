@@ -446,8 +446,17 @@ pub async fn save_audio_metadata(path: String, metadata: MetadataDto) -> Result<
 
 /// Decode a file once and return everything the audio pool needs: duration,
 /// stream properties, an absolute-value peak envelope, and embedded tags.
+/// Decode a file and return everything the audio pool needs.
+///
+/// `samples_per_peak` fixes the envelope resolution per unit of *time* rather
+/// than per file, so a ten-minute file gets proportionally more detail than a
+/// ten-second one and stays sharp when zoomed in. 256 samples per peak is about
+/// 172 buckets per second at 44.1 kHz.
 #[tauri::command]
-pub async fn analyze_audio_file(path: String, peak_buckets: u32) -> Result<AudioFileInfo, String> {
+pub async fn analyze_audio_file(
+    path: String,
+    samples_per_peak: u32,
+) -> Result<AudioFileInfo, String> {
     tokio::task::spawn_blocking(move || {
         let file_path = Path::new(&path);
         if !file_path.exists() {
@@ -468,10 +477,16 @@ pub async fn analyze_audio_file(path: String, peak_buckets: u32) -> Result<Audio
 
         let audio = decode_file(&path)?;
         let frames = audio.frames();
-        let buckets = peak_buckets.clamp(64, 8192) as usize;
-        let per_bucket = (frames / buckets).max(1);
 
-        let mut peaks: Vec<f32> = Vec::with_capacity(buckets);
+        // Bounded so a very long file cannot allocate without limit.
+        const MAX_BUCKETS: usize = 400_000;
+        let per_bucket = {
+            let requested = samples_per_peak.clamp(32, 65_536) as usize;
+            let minimum = (frames / MAX_BUCKETS).max(1);
+            requested.max(minimum)
+        };
+
+        let mut peaks: Vec<f32> = Vec::with_capacity(frames / per_bucket + 1);
         let mut idx = 0usize;
         while idx < frames {
             let end = (idx + per_bucket).min(frames);

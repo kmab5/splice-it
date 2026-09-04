@@ -100,9 +100,15 @@ export default function App() {
   const trackListRef = useRef<HTMLDivElement>(null);
   const isSyncingScrollRef = useRef(false);
 
+  // Width of the visible timeline window. The canvases are sized to this, not
+  // to the whole project.
+  const [timelineViewportWidth, setTimelineViewportWidth] = useState<number>(1000);
+  const scrollRafRef = useRef<number | null>(null);
+
   // Metering values
   const [liveLufs, setLiveLufs] = useState<number>(-14.0);
   const [livePeak, setLivePeak] = useState<number>(0);
+  const [liveGainReduction, setLiveGainReduction] = useState<number>(0);
 
   // Tab & Panel Sizing State (User Request: "allow resizing all tabs")
   const [trackHeaderWidth, setTrackHeaderWidth] = useState<number>(240);
@@ -292,6 +298,19 @@ export default function App() {
     audioEngine.updateTracks(project.tracks);
   }, [project.tracks]);
 
+  // Track the size of the timeline scroll container.
+  useEffect(() => {
+    const el = timelineContainerRef.current;
+    if (!el) return;
+
+    const measure = () => setTimelineViewportWidth(Math.max(200, el.clientWidth));
+    measure();
+
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [mode]);
+
   // Metering polling loop
   useEffect(() => {
     const interval = setInterval(() => {
@@ -299,8 +318,10 @@ export default function App() {
         const data = audioEngine.getAnalyserData();
         setLiveLufs(data.lufs);
         setLivePeak(data.peak);
+        setLiveGainReduction(data.reduction);
       } else {
         setLivePeak(0);
+        setLiveGainReduction(0);
       }
     }, 100);
     return () => clearInterval(interval);
@@ -662,12 +683,19 @@ export default function App() {
     }
   };
 
-  /** The document written to disk: both workspaces in one .sic file. */
+  /**
+   * The document written to disk: both workspaces in one .sic file.
+   *
+   * Waveform envelopes are stripped. They are derived data and now stored at
+   * full time resolution, so keeping them would add megabytes of JSON per
+   * source. They are rebuilt from the audio on load.
+   */
   const buildDocument = useCallback(
     (): ProjectState => ({
       ...project,
       version: PROJECT_FORMAT_VERSION,
       app_version: APP_VERSION,
+      audio_pool: (project.audio_pool || []).map(({ waveform_peaks, ...rest }) => rest),
       concat,
     }),
     [project, concat]
@@ -742,10 +770,24 @@ export default function App() {
 
     for (const source of pool) {
       if (!source.path || source.path.startsWith(BROWSER_PATH_PREFIX)) continue;
-      if (audioEngine.hasSource(source.path)) continue;
       try {
-        const bytes = await readAudioFileBytes(source.path);
-        await audioEngine.registerSource(source.path, bytes);
+        if (!audioEngine.hasSource(source.path)) {
+          const bytes = await readAudioFileBytes(source.path);
+          await audioEngine.registerSource(source.path, bytes);
+        }
+
+        // Envelopes are not saved in the project file, so rebuild them here.
+        if (!source.waveform_peaks || source.waveform_peaks.length === 0) {
+          const info = await analyzeAudioFile(source.path);
+          setProject((prev) => ({
+            ...prev,
+            audio_pool: (prev.audio_pool || []).map((s) =>
+              s.path === source.path
+                ? { ...s, waveform_peaks: info.peaks, duration_ms: info.duration_ms }
+                : s
+            ),
+          }));
+        }
       } catch {
         missing.push(source.name);
       }
@@ -1304,7 +1346,17 @@ export default function App() {
   // Synchronize scroll: horizontal scroll for Ruler/Canvas + vertical scroll with track headers
   const handleTimelineScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const target = e.currentTarget;
-    setScrollLeft(target.scrollLeft);
+
+    // Scroll fires far faster than the screen refreshes; coalescing to one
+    // update per frame keeps the canvas redraw off the critical path.
+    const nextScrollLeft = target.scrollLeft;
+    if (scrollRafRef.current === null) {
+      scrollRafRef.current = requestAnimationFrame(() => {
+        scrollRafRef.current = null;
+        setScrollLeft(nextScrollLeft);
+      });
+    }
+
     if (!isSyncingScrollRef.current && trackListRef.current) {
       isSyncingScrollRef.current = true;
       trackListRef.current.scrollTop = target.scrollTop;
@@ -1341,40 +1393,16 @@ export default function App() {
 
   const totalDurationMs = calculateTotalDurationMs();
 
-  /**
-   * Browsers cap how large a <canvas> can be. Chromium refuses anything much
-   * over 16384px per side on many GPUs, and a refused canvas renders as the
-   * broken-content placeholder (the sad face) with a blank grid behind it.
-   *
-   * The timeline canvas is currently as wide as the whole project, so a long
-   * file at high zoom blew straight past that limit. Zoom is clamped to keep
-   * the canvas inside a safe budget until the renderer is virtualized to draw
-   * only the visible window, which removes the ceiling entirely.
-   */
-  const maxZoom = useMemo(() => {
-    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
-    const safeCssWidth = 16384 / dpr;
-    const durationSec = Math.max(1, totalDurationMs / 1000);
-    return Math.max(5, Math.floor(safeCssWidth / (durationSec * 1.25)));
-  }, [totalDurationMs]);
-
-  const zoomCeiling = Math.min(250, maxZoom);
-  const isZoomLimited = zoom >= zoomCeiling && maxZoom < 250;
-
-  // Keep the current zoom inside the ceiling when the project grows.
-  useEffect(() => {
-    setZoom((current) => (current > zoomCeiling ? zoomCeiling : current));
-  }, [zoomCeiling]);
+  // The canvases are viewport-sized and virtualized, so the timeline extent is
+  // just a scroll range now. Zoom is no longer capped by canvas limits.
+  const zoomCeiling = 400;
 
   const setZoomClamped = useCallback(
     (next: number) => setZoom(Math.max(5, Math.min(zoomCeiling, Math.round(next)))),
-    [zoomCeiling]
+    []
   );
 
-  const timelineWidth = Math.max(
-    1800,
-    Math.min((totalDurationMs / 1000) * zoom * 1.25, 16384 / (typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1))
-  );
+  const timelineWidth = Math.max(1800, (totalDurationMs / 1000) * zoom * 1.25);
   const selectedClip = project.clips.find((c) => c.id === selectedClipId) || null;
 
   return (
@@ -1600,13 +1628,18 @@ export default function App() {
         >
           <div style={{ width: `${timelineWidth}px` }} className="relative flex flex-col min-w-full">
             {/* Timeline Ruler pinned sticky at top */}
-            <div className="sticky top-0 z-30 bg-slate-900 border-b border-slate-800">
+            <div
+              className="sticky top-0 left-0 z-30 bg-slate-900 border-b border-slate-800"
+              style={{ width: `${timelineViewportWidth}px` }}
+            >
               <TimelineRuler
                 totalDurationMs={totalDurationMs}
                 currentTimeMs={currentTimeMs}
                 zoom={zoom}
                 bpm={project.bpm}
                 canvasWidth={timelineWidth}
+                viewportWidth={timelineViewportWidth}
+                scrollLeft={scrollLeft}
                 clips={project.clips}
                 snapToGrid={snapToGrid}
                 onSeek={handleSeek}
@@ -1624,6 +1657,8 @@ export default function App() {
               snapToGrid={snapToGrid}
               bpm={project.bpm}
               canvasWidth={timelineWidth}
+              viewportWidth={timelineViewportWidth}
+              scrollLeft={scrollLeft}
               sourceWaveforms={sourceWaveforms}
               onSelectClip={setSelectedClipId}
               onSelectTrack={setSelectedTrackIndex}
@@ -1654,6 +1689,7 @@ export default function App() {
           snapToGrid={snapToGrid}
           onToggleSnap={() => setSnapToGrid(!snapToGrid)}
           zoom={zoom}
+          maxZoom={zoomCeiling}
           onZoomChange={setZoomClamped}
           onZoomFit={handleZoomFit}
           canUndo={history.past.length > 0}
@@ -1682,6 +1718,7 @@ export default function App() {
         currentTimeMs={currentTimeMs}
         liveLufs={liveLufs}
         livePeak={livePeak}
+        liveGainReduction={liveGainReduction}
         height={bottomDockHeight}
         onHeightChange={setBottomDockHeight}
         onUpdateDspSettings={handleUpdateDspSettings}
@@ -1743,17 +1780,6 @@ export default function App() {
             handleUpdateTrack(colorPicker.trackIndex, { color })
           }
         />
-      )}
-
-      {/* Zoom ceiling notice */}
-      {mode === 'timeline' && isZoomLimited && (
-        <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-40 bg-slate-900/95 border border-amber-600/50 text-amber-200 text-[11px] px-3 py-1.5 rounded-lg shadow-xl flex items-center gap-2 pointer-events-none">
-          <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-          <span>
-            Maximum zoom for a project this long ({zoomCeiling} px/s). Deeper zoom needs the
-            virtualized renderer, which is next on the list.
-          </span>
-        </div>
       )}
 
       {/* Settings */}

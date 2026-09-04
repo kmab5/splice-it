@@ -467,9 +467,16 @@ export class AudioEngine {
   // Metering
   // -------------------------------------------------------------------------
 
-  public getAnalyserData(): { wave: Float32Array; freq: Uint8Array; lufs: number; peak: number } {
+  public getAnalyserData(): {
+    wave: Float32Array;
+    freq: Uint8Array;
+    lufs: number;
+    peak: number;
+    /** Current compressor gain reduction in dB (0 = none, negative = reducing). */
+    reduction: number;
+  } {
     if (!this.analyserNode) {
-      return { wave: new Float32Array(0), freq: new Uint8Array(0), lufs: -70, peak: 0 };
+      return { wave: new Float32Array(0), freq: new Uint8Array(0), lufs: -70, peak: 0, reduction: 0 };
     }
     const wave = new Float32Array(this.analyserNode.fftSize);
     this.analyserNode.getFloatTimeDomainData(wave);
@@ -488,7 +495,10 @@ export class AudioEngine {
     const meanSquare = sumSquare / Math.max(1, wave.length);
     const lufs = meanSquare > 1e-7 ? -0.691 + 10 * Math.log10(meanSquare) : -70;
 
-    return { wave, freq, lufs, peak };
+    // DynamicsCompressorNode reports live gain reduction in dB.
+    const reduction = this.compressorNode ? this.compressorNode.reduction : 0;
+
+    return { wave, freq, lufs, peak, reduction };
   }
 }
 

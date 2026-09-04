@@ -110,9 +110,9 @@ export async function pickSavePath(
  */
 export async function analyzeAudioFile(
   path: string,
-  peakBuckets = 1200
+  samplesPerPeak = 256
 ): Promise<AudioFileInfo> {
-  return invokeCmd<AudioFileInfo>('analyze_audio_file', { path, peakBuckets });
+  return invokeCmd<AudioFileInfo>('analyze_audio_file', { path, samplesPerPeak });
 }
 
 /** Raw bytes of a source file, for decoding with Web Audio for preview playback. */

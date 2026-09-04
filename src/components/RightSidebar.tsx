@@ -47,6 +47,7 @@ interface RightSidebarProps {
   snapToGrid: boolean;
   onToggleSnap: () => void;
   zoom: number;
+  maxZoom?: number;
   onZoomChange: (zoom: number) => void;
   onZoomFit: () => void;
   // History
@@ -85,6 +86,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   snapToGrid,
   onToggleSnap,
   zoom,
+  maxZoom = 400,
   onZoomChange,
   onZoomFit,
   canUndo,
@@ -474,7 +476,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                   <input
                     type="range"
                     min={5}
-                    max={200}
+                    max={maxZoom}
                     step={1}
                     value={zoom}
                     onChange={(e) => onZoomChange(Number(e.target.value))}
@@ -482,7 +484,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                   />
 
                   <button
-                    onClick={() => onZoomChange(Math.min(250, Math.round(zoom * 1.25)))}
+                    onClick={() => onZoomChange(Math.min(maxZoom, Math.round(zoom * 1.25)))}
                     title="Zoom In (Mouse Wheel Up)"
                     className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 transition"
                   >

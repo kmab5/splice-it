@@ -16,6 +16,8 @@ interface MasteringRackProps {
   settings: MasterDspSettings;
   liveLufs: number;
   livePeak: number;
+  /** Live compressor gain reduction in dB (negative while reducing). */
+  liveGainReduction?: number;
   onUpdateSettings: (updates: Partial<MasterDspSettings>) => void;
   metadata?: MetadataDto;
   onUpdateMetadata?: (updates: Partial<MetadataDto>) => void;
@@ -65,6 +67,7 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
   settings,
   liveLufs,
   livePeak,
+  liveGainReduction = 0,
   onUpdateSettings,
   metadata,
   onUpdateMetadata,
@@ -451,6 +454,29 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
               <span>Compressor</span>
               <span className="font-mono text-[10px] text-cyan-400">
                 {settings.comp_threshold_db.toFixed(0)}dB | {settings.comp_ratio.toFixed(1)}:1
+              </span>
+            </div>
+
+            {/* Gain reduction meter: the compressor and limiter had controls but
+                no feedback, so there was no way to tell whether they were
+                working. This is the live reduction reported by the engine. */}
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] font-mono text-slate-500 w-5 shrink-0">GR</span>
+              <div className="flex-1 h-1.5 bg-slate-800/80 rounded-full overflow-hidden relative">
+                <div
+                  className="absolute right-0 top-0 bottom-0 bg-gradient-to-l from-amber-400 to-amber-500 transition-[width] duration-75"
+                  style={{
+                    // Full width of the meter represents 20 dB of reduction.
+                    width: `${Math.min(100, Math.max(0, (-liveGainReduction / 20) * 100))}%`,
+                  }}
+                />
+              </div>
+              <span
+                className={`text-[9px] font-mono w-10 text-right shrink-0 ${
+                  liveGainReduction < -0.1 ? 'text-amber-400' : 'text-slate-600'
+                }`}
+              >
+                {liveGainReduction < -0.1 ? `${liveGainReduction.toFixed(1)}` : '0.0'} dB
               </span>
             </div>
             <div className="flex gap-2">

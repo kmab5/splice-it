@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useLayoutEffect, useState, useCallback } from 'react';
 import { ClipState, TrackState } from '../types/project';
 import { getNonOverlappingStartTime, getNonOverlappingTrimBounds } from '../utils/clipCollisions';
 import { hexToRgba } from '../utils/trackColors';
@@ -13,7 +13,12 @@ interface TimelineCanvasProps {
   zoom: number; // px per second
   snapToGrid: boolean;
   bpm: number;
+  /** Full logical width of the timeline in pixels (the scrollable extent). */
   canvasWidth: number;
+  /** Width of the visible window. The canvas element is only ever this wide. */
+  viewportWidth: number;
+  /** Current horizontal scroll offset of the timeline container. */
+  scrollLeft: number;
   /** Real peak envelopes keyed by clip.source_path, produced by the Rust analyzer. */
   sourceWaveforms?: Record<string, { peaks: number[]; durationMs: number }>;
   onSelectClip: (clipId: string | null) => void;
@@ -52,6 +57,8 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
   snapToGrid,
   bpm,
   canvasWidth,
+  viewportWidth,
+  scrollLeft,
   sourceWaveforms = {},
   onSelectClip,
   onSelectTrack,
@@ -83,21 +90,36 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
     [snapToGrid, bpm]
   );
 
-  // High-performance canvas drawing loop
-  useEffect(() => {
+  // Only the visible window is rasterized.
+  //
+  // The canvas used to be as wide as the entire project, so a long file at high
+  // zoom asked for a canvas far past the ~16384px per side that browsers will
+  // allocate, and the element rendered as the broken-content placeholder. Now
+  // the element is viewport-sized and the drawing is translated by scrollLeft,
+  // so every coordinate below is still in absolute timeline pixels.
+  //
+  // useLayoutEffect keeps the repaint in the same frame as the scroll position,
+  // which avoids the contents lagging a frame behind while scrolling.
+  useLayoutEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = canvasWidth * dpr;
-    canvas.height = totalHeight * dpr;
-    ctx.scale(dpr, dpr);
+    const viewW = Math.max(1, viewportWidth);
+    canvas.width = Math.round(viewW * dpr);
+    canvas.height = Math.round(totalHeight * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.translate(-scrollLeft, 0);
+
+    // Visible range in absolute timeline pixels.
+    const viewStart = scrollLeft;
+    const viewEnd = scrollLeft + viewW;
 
     // 1. Clear background
     ctx.fillStyle = '#0a0f1d';
-    ctx.fillRect(0, 0, canvasWidth, totalHeight);
+    ctx.fillRect(viewStart, 0, viewW, totalHeight);
 
     // 2. Draw Track Lanes & Horizontal Dividers
     tracks.forEach((track, idx) => {
@@ -111,27 +133,29 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
       } else {
         ctx.fillStyle = idx % 2 === 0 ? '#0f172a' : '#0a0f1d';
       }
-      ctx.fillRect(0, y, canvasWidth, trackHeight);
+      ctx.fillRect(viewStart, y, viewW, trackHeight);
 
       // Track separator
       ctx.strokeStyle = isTrackSelected ? hexToRgba(trackColor, 0.45) : '#1e293b';
       ctx.lineWidth = isTrackSelected ? 1.5 : 1;
       ctx.beginPath();
-      ctx.moveTo(0, y + trackHeight - 0.5);
-      ctx.lineTo(canvasWidth, y + trackHeight - 0.5);
+      ctx.moveTo(viewStart, y + trackHeight - 0.5);
+      ctx.lineTo(viewEnd, y + trackHeight - 0.5);
       ctx.stroke();
 
-      // Left lane color accent strip
+      // Left lane colour accent strip, pinned to the left of the window
       ctx.fillStyle = trackColor;
-      ctx.fillRect(0, y, 3, trackHeight);
+      ctx.fillRect(viewStart, y, 3, trackHeight);
     });
 
     // 3. Draw Vertical Time Grid Lines
     const beatSec = 60 / bpm;
     const barSec = beatSec * 4;
-    const totalBars = Math.ceil(maxTimeSec / barSec);
+    const barPx = barSec * zoom;
+    const firstBar = Math.max(0, Math.floor(viewStart / barPx) - 1);
+    const lastBar = Math.ceil(viewEnd / barPx) + 1;
 
-    for (let b = 0; b <= totalBars; b++) {
+    for (let b = firstBar; b <= lastBar; b++) {
       const barX = b * barSec * zoom;
       // Bar line
       ctx.strokeStyle = '#1e293b';
@@ -164,6 +188,8 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
 
       const clipX = (clip.start_time_ms / 1000) * zoom;
       const clipW = Math.max(12, (clip.duration_ms / 1000) * zoom);
+      if (clipX + clipW < viewStart - 32 || clipX > viewEnd + 32) return;
+
       const clipY = trackIndex * trackHeight + 4;
       const clipH = trackHeight - 8;
 
@@ -210,6 +236,11 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
         ctx.fillText(clip.name.substring(0, 16), clipX + 8, clipY + 14);
       }
 
+      // Visible span of this clip, so drawing cost follows the window and not
+      // the length of the clip.
+      const drawX0 = Math.max(clipX, viewStart);
+      const drawX1 = Math.min(clipX + clipW, viewEnd);
+
       // Waveform Peaks rendering (Accented with track color)
       const waveY = clipY + 20;
       const waveH = clipH - 22;
@@ -219,8 +250,8 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
       ctx.strokeStyle = '#1e293b';
       ctx.lineWidth = 0.5;
       ctx.beginPath();
-      ctx.moveTo(clipX, midY);
-      ctx.lineTo(clipX + clipW, midY);
+      ctx.moveTo(drawX0, midY);
+      ctx.lineTo(drawX1, midY);
       ctx.stroke();
 
       // Draw peaks from the decoded source. The slice of the envelope shown
@@ -240,13 +271,33 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
         const startFrac = clip.offset_ms / wave.durationMs;
         const spanFrac = clip.duration_ms / wave.durationMs;
 
-        for (let p = 0; p < numPoints; p++) {
-          const frac = startFrac + (p / numPoints) * spanFrac;
+        // One column every 1.5px across the visible part of the clip. Each
+        // column takes the loudest peak in the slice of source it covers, so
+        // detail improves with zoom instead of being fixed at import time.
+        const step = 1.5;
+        for (let px = drawX0; px < drawX1; px += step) {
+          const clipFrac = (px - clipX) / clipW;
+          const frac = startFrac + clipFrac * spanFrac;
           if (frac < 0 || frac >= 1) continue; // past the end of the source
-          const idx = Math.min(peaks.length - 1, Math.floor(frac * peaks.length));
-          const amp = Math.min(1, Math.max(0, peaks[idx] * clip.gain));
+
+          const nextFrac = startFrac + ((px + step - clipX) / clipW) * spanFrac;
+          const i0 = Math.min(peaks.length - 1, Math.max(0, Math.floor(frac * peaks.length)));
+          const i1 = Math.min(peaks.length, Math.max(i0 + 1, Math.ceil(nextFrac * peaks.length)));
+
+          // When one column covers a huge span of source (zoomed far out on a
+          // long file) scanning every bucket is wasted work, so sample a
+          // bounded subset. The envelope shape is preserved either way.
+          const span = i1 - i0;
+          const stride = span > 64 ? Math.ceil(span / 64) : 1;
+
+          let bucket = 0;
+          for (let k = i0; k < i1; k += stride) {
+            if (peaks[k] > bucket) bucket = peaks[k];
+          }
+
+          const amp = Math.min(1, Math.max(0, bucket * clip.gain));
           const ph = Math.max(0.5, amp * (waveH / 2) * 0.92);
-          ctx.fillRect(clipX + (p / numPoints) * clipW, midY - ph, 1.5, ph * 2);
+          ctx.fillRect(px, midY - ph, step, ph * 2);
         }
       } else {
         // Source not analyzed (or missing): show a flat placeholder rather than
@@ -255,8 +306,8 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
         ctx.setLineDash([3, 3]);
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(clipX + 2, midY);
-        ctx.lineTo(clipX + clipW - 2, midY);
+        ctx.moveTo(Math.max(clipX + 2, viewStart), midY);
+        ctx.lineTo(Math.min(clipX + clipW - 2, viewEnd), midY);
         ctx.stroke();
         ctx.setLineDash([]);
       }
@@ -397,7 +448,10 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
       const textMetrics = ctx.measureText(text);
       const badgeW = textMetrics.width + 16;
       const badgeH = 18;
-      const badgeX = Math.max(6, Math.min(canvasWidth - badgeW - 6, playheadX - badgeW / 2));
+      const badgeX = Math.max(
+        viewStart + 6,
+        Math.min(viewEnd - badgeW - 6, playheadX - badgeW / 2)
+      );
       const badgeY = 12;
 
       ctx.fillStyle = 'rgba(15, 23, 42, 0.95)';
@@ -416,6 +470,8 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
     }
   }, [
     canvasWidth,
+    viewportWidth,
+    scrollLeft,
     totalHeight,
     tracks,
     clips,
@@ -439,7 +495,9 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
     if (!canvasRef.current) return;
 
     const rect = canvasRef.current.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
+    // The canvas is only as wide as the window, so add the scroll offset to get
+    // back into the absolute timeline coordinates the hit tests use.
+    const mouseX = e.clientX - rect.left + scrollLeft;
     const mouseY = e.clientY - rect.top;
 
     const playheadX = (currentTimeMs / 1000) * zoom;
@@ -529,7 +587,7 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
-    const currentMouseX = e.clientX - rect.left;
+    const currentMouseX = e.clientX - rect.left + scrollLeft;
     const currentMouseY = e.clientY - rect.top;
 
     if (!dragState) {
@@ -632,7 +690,7 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
       const zoomFactor = e.deltaY < 0 ? 1.15 : 0.85;
-      const newZoom = Math.max(5, Math.min(250, Math.round(zoom * zoomFactor)));
+      const newZoom = Math.max(5, Math.min(400, Math.round(zoom * zoomFactor)));
       onZoomChange?.(newZoom);
     }
   };
@@ -642,7 +700,7 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
     e.preventDefault();
     if (!canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
+    const mouseX = e.clientX - rect.left + scrollLeft;
     const mouseY = e.clientY - rect.top;
     const trackIndex = Math.floor(mouseY / trackHeight);
 
@@ -669,9 +727,9 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
   return (
     <div
       id="timeline-canvas-container"
-      className="bg-[#0a0f1d] relative select-none"
+      className="bg-[#0a0f1d] relative select-none sticky left-0"
       style={{
-        width: `${canvasWidth}px`,
+        width: `${Math.max(1, viewportWidth)}px`,
         height: `${totalHeight}px`,
         cursor: dragState ? (dragState.mode === 'scrub' ? 'ew-resize' : 'grabbing') : cursorStyle,
       }}
@@ -693,7 +751,7 @@ export const TimelineCanvas: React.FC<TimelineCanvasProps> = ({
       />
       <canvas
         ref={canvasRef}
-        style={{ width: `${canvasWidth}px`, height: `${totalHeight}px` }}
+        style={{ width: `${Math.max(1, viewportWidth)}px`, height: `${totalHeight}px` }}
         className="block"
       />
     </div>
