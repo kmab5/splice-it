@@ -1,6 +1,6 @@
 [package]
 name = "splice-it"
-version = "0.1.0"
+version = "0.2.4"
 description = "Splice It - Modern High-Performance Desktop Audio Workspace"
 authors = ["Splice It Team"]
 edition = "2021"

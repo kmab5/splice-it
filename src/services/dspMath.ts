@@ -8,38 +8,118 @@ export interface DspEqParams {
   mudScoopGainDb: number;
 }
 
+interface BiquadCoeffs {
+  b0: number;
+  b1: number;
+  b2: number;
+  a1: number;
+  a2: number;
+}
+
 /**
- * Calculates the combined dB magnitude response of the High-Shelf cut and Mud-Scoop peaking filter
- * across a log frequency scale from 20 Hz to 20,000 Hz.
+ * RBJ Audio EQ Cookbook peaking (bell) filter. These formulas are deliberately
+ * identical to `BiquadFilter::set_peaking` in src-tauri/src/dsp.rs, so the curve
+ * drawn in the UI is the curve the exporter actually applies.
+ */
+export function peakingCoeffs(
+  sampleRate: number,
+  freq: number,
+  q: number,
+  gainDb: number
+): BiquadCoeffs {
+  const f = Math.min(Math.max(freq, 20), sampleRate * 0.49);
+  const w0 = (2 * Math.PI * f) / sampleRate;
+  const A = Math.pow(10, gainDb / 40);
+  const alpha = Math.sin(w0) / (2 * Math.max(q, 0.1));
+  const cosW0 = Math.cos(w0);
+
+  const a0 = 1 + alpha / A;
+  return {
+    b0: (1 + alpha * A) / a0,
+    b1: (-2 * cosW0) / a0,
+    b2: (1 - alpha * A) / a0,
+    a1: (-2 * cosW0) / a0,
+    a2: (1 - alpha / A) / a0,
+  };
+}
+
+/** RBJ high-shelf, matching `BiquadFilter::set_high_shelf` in dsp.rs. */
+export function highShelfCoeffs(
+  sampleRate: number,
+  freq: number,
+  gainDb: number
+): BiquadCoeffs {
+  const f = Math.min(Math.max(freq, 20), sampleRate * 0.49);
+  const w0 = (2 * Math.PI * f) / sampleRate;
+  const A = Math.pow(10, gainDb / 40);
+  const S = 1.0; // shelf slope
+  const alpha =
+    (Math.sin(w0) / 2) * Math.sqrt(Math.max(0, (A + 1 / A) * (1 / S - 1) + 2));
+  const cosW0 = Math.cos(w0);
+  const twoSqrtAAlpha = 2 * Math.sqrt(A) * alpha;
+
+  const a0 = A + 1 - (A - 1) * cosW0 + twoSqrtAAlpha;
+  return {
+    b0: (A * (A + 1 + (A - 1) * cosW0 + twoSqrtAAlpha)) / a0,
+    b1: (-2 * A * (A - 1 + (A + 1) * cosW0)) / a0,
+    b2: (A * (A + 1 + (A - 1) * cosW0 - twoSqrtAAlpha)) / a0,
+    a1: (2 * (A - 1 - (A + 1) * cosW0)) / a0,
+    a2: (A + 1 - (A - 1) * cosW0 - twoSqrtAAlpha) / a0,
+  };
+}
+
+/**
+ * Magnitude response in dB of a normalized biquad at one frequency, evaluated
+ * as |H(e^jw)| on the unit circle.
+ */
+export function biquadMagnitudeDb(
+  c: BiquadCoeffs,
+  freq: number,
+  sampleRate: number
+): number {
+  const w = (2 * Math.PI * freq) / sampleRate;
+  const cosW = Math.cos(w);
+  const sinW = Math.sin(w);
+  const cos2W = Math.cos(2 * w);
+  const sin2W = Math.sin(2 * w);
+
+  const numRe = c.b0 + c.b1 * cosW + c.b2 * cos2W;
+  const numIm = -(c.b1 * sinW + c.b2 * sin2W);
+  const denRe = 1 + c.a1 * cosW + c.a2 * cos2W;
+  const denIm = -(c.a1 * sinW + c.a2 * sin2W);
+
+  const magnitude =
+    Math.hypot(numRe, numIm) / Math.max(1e-12, Math.hypot(denRe, denIm));
+
+  return 20 * Math.log10(Math.max(magnitude, 1e-9));
+}
+
+/**
+ * Combined dB response of the high-shelf cut and the mud-scoop bell across the
+ * given frequencies.
+ *
+ * The previous implementation was an approximation: the shelf hard-returned 0
+ * below 500 Hz and used a 1/(1+(fc/f)^2) weighting, and the bell was a Gaussian.
+ * Neither matched the actual IIR filters, so the displayed curve did not
+ * describe what the render was doing.
  */
 export function calculateEqResponse(
   frequencies: number[],
   sampleRate: number,
   params: DspEqParams
 ): number[] {
-  return frequencies.map((f) => {
-    // 1. High Shelf filter response
-    const hsGain = calculateHighShelfDb(f, sampleRate, params.highCutHz, params.highCutGainDb);
-    // 2. Mud Scoop peaking filter response
-    const scoopGain = calculatePeakingDb(f, sampleRate, params.mudScoopHz, params.mudScoopQ, params.mudScoopGainDb);
-    return hsGain + scoopGain;
-  });
-}
+  const shelf = highShelfCoeffs(sampleRate, params.highCutHz, params.highCutGainDb);
+  const bell = peakingCoeffs(
+    sampleRate,
+    params.mudScoopHz,
+    params.mudScoopQ,
+    params.mudScoopGainDb
+  );
 
-function calculateHighShelfDb(freq: number, sampleRate: number, cutoffHz: number, gainDb: number): number {
-  if (freq < 500) return 0;
-  const ratio = freq / cutoffHz;
-  if (ratio < 0.2) return 0;
-  // Smooth transition shelf curve
-  const weight = 1 / (1 + Math.pow(cutoffHz / Math.max(freq, 20), 2));
-  return gainDb * weight;
-}
-
-function calculatePeakingDb(freq: number, sampleRate: number, centerHz: number, q: number, gainDb: number): number {
-  const bandwidthHz = centerHz / Math.max(q, 0.1);
-  const diff = Math.abs(freq - centerHz);
-  const factor = Math.exp(-0.5 * Math.pow(diff / (bandwidthHz * 0.5), 2));
-  return gainDb * factor;
+  return frequencies.map(
+    (f) =>
+      biquadMagnitudeDb(shelf, f, sampleRate) + biquadMagnitudeDb(bell, f, sampleRate)
+  );
 }
 
 /**

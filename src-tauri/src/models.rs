@@ -1,4 +1,25 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Lenient deserializer for optional unsigned tag fields.
+///
+/// Tag values like year and track number arrive from free-text UI inputs and
+/// from whatever a third-party encoder wrote into a file. A nonsensical value
+/// should drop the tag, not abort an entire export with a deserialization
+/// error, so anything negative, fractional, non-finite, or out of range
+/// becomes `None`.
+fn lenient_opt_u32<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<f64>::deserialize(deserializer)?;
+    Ok(raw.and_then(|n| {
+        if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 {
+            Some(n as u32)
+        } else {
+            None
+        }
+    }))
+}
 
 /// Audio metadata transfer object covering standard and extended ID3/FLAC/Vorbis tags.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -7,9 +28,13 @@ pub struct MetadataDto {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
+    #[serde(default, deserialize_with = "lenient_opt_u32")]
     pub year: Option<u32>,
+    #[serde(default, deserialize_with = "lenient_opt_u32")]
     pub track_number: Option<u32>,
+    #[serde(default, deserialize_with = "lenient_opt_u32")]
     pub total_tracks: Option<u32>,
+    #[serde(default, deserialize_with = "lenient_opt_u32")]
     pub disc_number: Option<u32>,
     pub genre: Option<String>,
     pub comment: Option<String>,

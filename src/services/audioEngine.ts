@@ -124,8 +124,10 @@ export class AudioEngine {
   // -------------------------------------------------------------------------
 
   public updateMasterDsp(dsp: MasterDspSettings) {
-    if (!this.ctx) return;
-    const now = this.ctx.currentTime;
+    // Previously this bailed out when the context did not exist yet, so EQ
+    // changes made before the first playback were dropped on the floor.
+    const ctx = this.getAudioContext();
+    const now = ctx.currentTime;
 
     if (this.highShelfNode) {
       this.highShelfNode.frequency.setValueAtTime(dsp.eq_high_cut_hz, now);

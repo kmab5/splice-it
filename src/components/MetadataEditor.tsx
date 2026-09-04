@@ -30,6 +30,18 @@ export const MetadataEditor: React.FC<MetadataEditorProps> = ({
     }
   };
 
+  /**
+   * Tag counts are unsigned integers in the file format. Without this the
+   * number spinner walked negative from an empty field and the export failed
+   * with: invalid value: integer `-6`, expected u32.
+   */
+  const parseCount = (raw: string, max: number): number | undefined => {
+    if (raw.trim() === '') return undefined;
+    const n = Math.floor(Number(raw));
+    if (!Number.isFinite(n) || n <= 0) return undefined;
+    return Math.min(n, max);
+  };
+
   const clearCoverArt = () => {
     onUpdateMetadata({ cover_art_base64: undefined, cover_art_mime: undefined });
   };
@@ -150,8 +162,11 @@ export const MetadataEditor: React.FC<MetadataEditorProps> = ({
                 </label>
                 <input
                   type="number"
+                  min={1}
+                  max={9999}
+                  step={1}
                   value={metadata.year || ''}
-                  onChange={(e) => onUpdateMetadata({ year: Number(e.target.value) || undefined })}
+                  onChange={(e) => onUpdateMetadata({ year: parseCount(e.target.value, 9999) })}
                   placeholder="2026"
                   className="w-full bg-slate-900 border border-slate-700/80 rounded px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-emerald-500 font-mono"
                 />
@@ -190,9 +205,12 @@ export const MetadataEditor: React.FC<MetadataEditorProps> = ({
                 <div className="flex items-center space-x-1">
                   <input
                     type="number"
+                    min={1}
+                    max={9999}
+                    step={1}
                     value={metadata.track_number || ''}
                     onChange={(e) =>
-                      onUpdateMetadata({ track_number: Number(e.target.value) || undefined })
+                      onUpdateMetadata({ track_number: parseCount(e.target.value, 9999) })
                     }
                     placeholder="1"
                     className="w-1/2 bg-slate-900 border border-slate-700/80 rounded px-2 py-1.5 text-slate-200 focus:outline-none focus:border-emerald-500 font-mono text-center"
@@ -200,9 +218,12 @@ export const MetadataEditor: React.FC<MetadataEditorProps> = ({
                   <span className="text-slate-500 font-mono">/</span>
                   <input
                     type="number"
+                    min={1}
+                    max={9999}
+                    step={1}
                     value={metadata.total_tracks || ''}
                     onChange={(e) =>
-                      onUpdateMetadata({ total_tracks: Number(e.target.value) || undefined })
+                      onUpdateMetadata({ total_tracks: parseCount(e.target.value, 9999) })
                     }
                     placeholder="10"
                     className="w-1/2 bg-slate-900 border border-slate-700/80 rounded px-2 py-1.5 text-slate-200 focus:outline-none focus:border-emerald-500 font-mono text-center"
@@ -255,7 +276,14 @@ export const MetadataEditor: React.FC<MetadataEditorProps> = ({
                 <input
                   type="number"
                   value={metadata.bpm || ''}
-                  onChange={(e) => onUpdateMetadata({ bpm: Number(e.target.value) || undefined })}
+                  min={0}
+                  max={999}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    onUpdateMetadata({
+                      bpm: e.target.value.trim() === '' || !Number.isFinite(n) || n <= 0 ? undefined : n,
+                    });
+                  }}
                   placeholder="120"
                   className="w-full bg-slate-900 border border-slate-700/80 rounded px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-cyan-500 font-mono"
                 />

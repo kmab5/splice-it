@@ -1,6 +1,15 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { MasterDspSettings, MetadataDto } from '../types/project';
 import { calculateEqResponse } from '../services/dspMath';
+
+// Display bounds for the EQ curve.
+const MIN_FREQ = 20;
+const MAX_FREQ = 20000;
+const DB_RANGE = 18;
+const LOG_MIN = Math.log10(MIN_FREQ);
+const LOG_MAX = Math.log10(MAX_FREQ);
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 import { Gauge, Sliders, Activity, Disc3, ShieldCheck, Check, Upload } from 'lucide-react';
 
 interface MasteringRackProps {
@@ -13,6 +22,42 @@ interface MasteringRackProps {
   activeTab?: 'dsp' | 'metadata' | 'clip';
   onSelectTab?: (tab: 'dsp' | 'metadata' | 'clip') => void;
 }
+
+interface EqParamProps {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  display: string;
+  accent: string;
+  onChange: (value: number) => void;
+}
+
+const EqParam: React.FC<EqParamProps> = ({
+  label,
+  value,
+  min,
+  max,
+  step,
+  display,
+  accent,
+  onChange,
+}) => (
+  <div className="flex items-center gap-2">
+    <span className="text-[9px] text-slate-500 w-7 shrink-0 font-mono uppercase">{label}</span>
+    <input
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={value}
+      onChange={(e) => onChange(Number(e.target.value))}
+      className={`flex-1 min-w-0 ${accent} h-1 bg-slate-800 rounded cursor-pointer`}
+    />
+    <span className="text-[9px] font-mono text-slate-300 w-11 text-right shrink-0">{display}</span>
+  </div>
+);
 
 export const MasteringRack: React.FC<MasteringRackProps> = ({
   settings,
@@ -43,68 +88,98 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
     }
   };
 
-  // Draw Interactive Frequency Response Curve
+  const eqWrapRef = useRef<HTMLDivElement>(null);
+  const [eqSize, setEqSize] = useState<{ w: number; h: number }>({ w: 440, h: 140 });
+  const [dragNode, setDragNode] = useState<'shelf' | 'bell' | null>(null);
+  const [hoverNode, setHoverNode] = useState<'shelf' | 'bell' | null>(null);
+
+  // The canvas backing store was hardcoded to 140px tall while the element is
+  // stretched by flex, so the curve was drawn at the wrong scale and never
+  // redrew when the dock was resized.
+  useEffect(() => {
+    const wrap = eqWrapRef.current;
+    if (!wrap) return;
+
+    const measure = () => {
+      const rect = wrap.getBoundingClientRect();
+      setEqSize({ w: Math.max(120, rect.width), h: Math.max(80, rect.height) });
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(wrap);
+    return () => observer.disconnect();
+  }, []);
+
+  const freqToX = useCallback(
+    (freq: number) => ((Math.log10(freq) - LOG_MIN) / (LOG_MAX - LOG_MIN)) * eqSize.w,
+    [eqSize.w]
+  );
+  const xToFreq = useCallback(
+    (x: number) => Math.pow(10, LOG_MIN + (clamp(x, 0, eqSize.w) / eqSize.w) * (LOG_MAX - LOG_MIN)),
+    [eqSize.w]
+  );
+  const dbToY = useCallback(
+    (db: number) => eqSize.h / 2 - (db / DB_RANGE) * (eqSize.h / 2 - 10),
+    [eqSize.h]
+  );
+  const yToDb = useCallback(
+    (y: number) => ((eqSize.h / 2 - y) / (eqSize.h / 2 - 10)) * DB_RANGE,
+    [eqSize.h]
+  );
+
+  // Draw the frequency response curve
   useEffect(() => {
     const canvas = eqCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    const { w: width, h: height } = eqSize;
     const dpr = window.devicePixelRatio || 1;
-    const width = canvas.clientWidth || 440;
-    const height = 140;
     canvas.width = width * dpr;
     canvas.height = height * dpr;
     ctx.scale(dpr, dpr);
-
     ctx.clearRect(0, 0, width, height);
 
     // Background
     ctx.fillStyle = '#090d16';
     ctx.fillRect(0, 0, width, height);
 
-    // Grid: dB levels (+12dB, +6dB, 0dB, -6dB, -12dB)
-    const dbLevels = [12, 6, 0, -6, -12];
+    // dB grid
     ctx.strokeStyle = '#1e293b';
     ctx.lineWidth = 1;
-    ctx.fillStyle = '#475569';
     ctx.font = '9px monospace';
-    ctx.textAlign = 'right';
-
-    dbLevels.forEach((db) => {
-      // Map [-18dB, +18dB] to [height, 0]
-      const y = height / 2 - (db / 18) * (height / 2 - 10);
+    [12, 6, 0, -6, -12].forEach((db) => {
+      const y = dbToY(db);
+      ctx.strokeStyle = db === 0 ? '#334155' : '#1e293b';
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(width, y);
       ctx.stroke();
-      ctx.fillText(`${db > 0 ? '+' : ''}${db}dB`, width - 6, y - 2);
+      ctx.fillStyle = '#475569';
+      ctx.textAlign = 'right';
+      ctx.fillText(`${db > 0 ? '+' : ''}${db}`, width - 4, y - 2);
     });
 
-    // Frequency Grid: 100Hz, 1kHz, 10kHz
-    const freqMarkers = [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
-    const logMin = Math.log10(20);
-    const logMax = Math.log10(20000);
-
-    freqMarkers.forEach((freq) => {
-      const x = ((Math.log10(freq) - logMin) / (logMax - logMin)) * width;
+    // Frequency grid
+    ctx.strokeStyle = '#1e293b';
+    [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].forEach((freq) => {
+      const x = freqToX(freq);
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, height);
       ctx.stroke();
-
-      const label = freq >= 1000 ? `${freq / 1000}k` : `${freq}`;
+      ctx.fillStyle = '#475569';
       ctx.textAlign = 'center';
-      ctx.fillText(label, x, height - 4);
+      ctx.fillText(freq >= 1000 ? `${freq / 1000}k` : `${freq}`, x, height - 4);
     });
 
-    // Sample points along the frequency scale
-    const numPoints = 120;
+    // Response curve, sampled per pixel
+    const numPoints = Math.max(60, Math.floor(width));
     const freqs: number[] = [];
     for (let i = 0; i < numPoints; i++) {
-      const p = i / (numPoints - 1);
-      const f = Math.pow(10, logMin + p * (logMax - logMin));
-      freqs.push(f);
+      freqs.push(Math.pow(10, LOG_MIN + (i / (numPoints - 1)) * (LOG_MAX - LOG_MIN)));
     }
 
     const responses = calculateEqResponse(freqs, 44100, {
@@ -115,55 +190,130 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
       mudScoopGainDb: settings.eq_mud_scoop_gain_db,
     });
 
-    // Draw Response Curve with Gradient Fill
     ctx.beginPath();
-    ctx.moveTo(0, height / 2);
     for (let i = 0; i < numPoints; i++) {
       const x = (i / (numPoints - 1)) * width;
-      const db = responses[i];
-      const y = height / 2 - (db / 18) * (height / 2 - 10);
+      const y = dbToY(responses[i]);
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
-
-    // Glow stroke
     ctx.strokeStyle = '#10b981';
     ctx.lineWidth = 2;
     ctx.stroke();
 
-    // Fill under curve
-    ctx.lineTo(width, height / 2);
-    ctx.lineTo(0, height / 2);
+    // Fill under the curve, down to the 0 dB line
+    ctx.lineTo(width, dbToY(0));
+    ctx.lineTo(0, dbToY(0));
     ctx.closePath();
     const fillGrad = ctx.createLinearGradient(0, 0, 0, height);
-    fillGrad.addColorStop(0, 'rgba(16, 185, 129, 0.15)');
-    fillGrad.addColorStop(1, 'rgba(6, 182, 212, 0.02)');
+    fillGrad.addColorStop(0, 'rgba(16, 185, 129, 0.18)');
+    fillGrad.addColorStop(1, 'rgba(6, 182, 212, 0.03)');
     ctx.fillStyle = fillGrad;
     ctx.fill();
 
-    // Draw interactive node pins:
-    // 1. Mud Scoop node pin (200-400Hz)
-    const mudX = ((Math.log10(settings.eq_mud_scoop_hz) - logMin) / (logMax - logMin)) * width;
-    const mudY = height / 2 - (settings.eq_mud_scoop_gain_db / 18) * (height / 2 - 10);
-    ctx.fillStyle = '#06b6d4';
-    ctx.beginPath();
-    ctx.arc(mudX, mudY, 5, 0, 2 * Math.PI);
-    ctx.fill();
-    ctx.strokeStyle = '#f8fafc';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+    // Draggable control nodes
+    const drawNode = (x: number, y: number, color: string, active: boolean) => {
+      if (active) {
+        ctx.beginPath();
+        ctx.arc(x, y, 11, 0, 2 * Math.PI);
+        ctx.fillStyle = `${color}33`;
+        ctx.fill();
+      }
+      ctx.beginPath();
+      ctx.arc(x, y, active ? 7 : 5.5, 0, 2 * Math.PI);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.strokeStyle = '#f8fafc';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    };
 
-    // 2. High Shelf node pin (12kHz)
-    const hsX = ((Math.log10(settings.eq_high_cut_hz) - logMin) / (logMax - logMin)) * width;
-    const hsY = height / 2 - (settings.eq_high_cut_gain_db / 18) * (height / 2 - 10);
-    ctx.fillStyle = '#10b981';
-    ctx.beginPath();
-    ctx.arc(hsX, hsY, 5, 0, 2 * Math.PI);
-    ctx.fill();
-    ctx.strokeStyle = '#f8fafc';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-  }, [settings]);
+    drawNode(
+      freqToX(settings.eq_mud_scoop_hz),
+      dbToY(settings.eq_mud_scoop_gain_db),
+      '#06b6d4',
+      dragNode === 'bell' || hoverNode === 'bell'
+    );
+    drawNode(
+      freqToX(settings.eq_high_cut_hz),
+      dbToY(settings.eq_high_cut_gain_db),
+      '#10b981',
+      dragNode === 'shelf' || hoverNode === 'shelf'
+    );
+  }, [settings, eqSize, dragNode, hoverNode, freqToX, dbToY]);
+
+  // ---- Pointer interaction on the EQ curve --------------------------------
+
+  const nodeAt = useCallback(
+    (x: number, y: number): 'shelf' | 'bell' | null => {
+      const near = (nx: number, ny: number) => Math.hypot(x - nx, y - ny) <= 14;
+      if (near(freqToX(settings.eq_mud_scoop_hz), dbToY(settings.eq_mud_scoop_gain_db))) {
+        return 'bell';
+      }
+      if (near(freqToX(settings.eq_high_cut_hz), dbToY(settings.eq_high_cut_gain_db))) {
+        return 'shelf';
+      }
+      return null;
+    },
+    [settings, freqToX, dbToY]
+  );
+
+  const localPoint = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+
+  const applyDrag = useCallback(
+    (node: 'shelf' | 'bell', x: number, y: number) => {
+      const freq = xToFreq(x);
+      const gainDb = clamp(yToDb(y), -12, 6);
+
+      if (node === 'bell') {
+        onUpdateSettings({
+          eq_mud_scoop_hz: Math.round(clamp(freq, 60, 2000)),
+          eq_mud_scoop_gain_db: Number(gainDb.toFixed(1)),
+        });
+      } else {
+        onUpdateSettings({
+          eq_high_cut_hz: Math.round(clamp(freq, 2000, 20000)),
+          eq_high_cut_gain_db: Number(gainDb.toFixed(1)),
+        });
+      }
+    },
+    [onUpdateSettings, xToFreq, yToDb]
+  );
+
+  const handleEqMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const { x, y } = localPoint(e);
+    const hit = nodeAt(x, y);
+    if (!hit) return;
+    e.preventDefault();
+    setDragNode(hit);
+    applyDrag(hit, x, y);
+  };
+
+  const handleEqMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const { x, y } = localPoint(e);
+    if (dragNode) {
+      applyDrag(dragNode, x, y);
+      return;
+    }
+    setHoverNode(nodeAt(x, y));
+  };
+
+  const endEqDrag = () => {
+    setDragNode(null);
+    setHoverNode(null);
+  };
+
+  /** Scrolling over the bell node changes its Q. */
+  const handleEqWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    const { x, y } = localPoint(e);
+    if (nodeAt(x, y) !== 'bell') return;
+    e.preventDefault();
+    const next = settings.eq_mud_scoop_q * (e.deltaY < 0 ? 1.12 : 0.89);
+    onUpdateSettings({ eq_mud_scoop_q: Number(clamp(next, 0.3, 8).toFixed(2)) });
+  };
 
   return (
     <div
@@ -313,44 +463,120 @@ export const MasteringRack: React.FC<MasteringRackProps> = ({
         </div>
       </div>
 
-      {/* Middle Column: Parametric EQ Curve */}
-      <div className="flex-1 p-4 flex flex-col bg-[#0F172A] overflow-hidden">
-        <div className="flex items-center justify-between mb-2">
+      {/* Middle Column: Parametric EQ Curve + Controls */}
+      <div className="flex-1 p-4 flex flex-col bg-[#0F172A] overflow-hidden min-w-0">
+        <div className="flex items-center justify-between mb-2 shrink-0">
           <span className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">
-            Parametric EQ Curve
+            Parametric EQ
           </span>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5 text-[9px] font-mono text-slate-400">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
-              <span>12k Cut</span>
-              <span className="w-2 h-2 rounded-full bg-cyan-500 inline-block ml-1"></span>
-              <span>Mud Scoop</span>
-              <span className="w-2 h-2 rounded-full bg-yellow-500 inline-block ml-1"></span>
-              <span>IIR BiQuad</span>
-            </div>
+          <div className="flex items-center gap-2.5 text-[9px] font-mono text-slate-400">
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+              High Shelf
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-cyan-500 inline-block" />
+              Bell
+            </span>
+            <span className="text-slate-600">drag nodes &middot; scroll bell for Q</span>
           </div>
         </div>
 
-        {/* Responsive Interactive Canvas */}
-        <div className="flex-1 border border-slate-800 rounded relative bg-black/40 overflow-hidden min-h-[90px]">
-          <div
-            className="absolute inset-0 opacity-10 pointer-events-none"
+        {/* Interactive Canvas */}
+        <div
+          ref={eqWrapRef}
+          className="flex-1 border border-slate-800 rounded relative bg-black/40 overflow-hidden min-h-[90px]"
+        >
+          <canvas
+            ref={eqCanvasRef}
             style={{
-              backgroundImage:
-                'linear-gradient(#475569 1px, transparent 1px), linear-gradient(90deg, #475569 1px, transparent 1px)',
-              backgroundSize: '25% 25%',
+              width: '100%',
+              height: '100%',
+              cursor: dragNode ? 'grabbing' : hoverNode ? 'grab' : 'default',
             }}
+            className="block"
+            onMouseDown={handleEqMouseDown}
+            onMouseMove={handleEqMouseMove}
+            onMouseUp={endEqDrag}
+            onMouseLeave={endEqDrag}
+            onWheel={handleEqWheel}
+            onDoubleClick={() =>
+              onUpdateSettings({ eq_high_cut_gain_db: 0, eq_mud_scoop_gain_db: 0 })
+            }
+            title="Drag a node to move it. Scroll over the bell to change Q. Double-click to flatten."
           />
-          <canvas ref={eqCanvasRef} className="w-full h-full block" />
         </div>
 
-        {/* Frequency Axis Footer */}
-        <div className="flex justify-between items-center mt-2 text-[10px] font-mono text-slate-500">
-          <span>20 Hz</span>
-          <span>100 Hz</span>
-          <span>1 kHz</span>
-          <span className="text-emerald-400 font-semibold">10 kHz</span>
-          <span>20 kHz</span>
+        {/* EQ Controls — these did not exist before, so the five eq_* settings
+            were unreachable from the UI entirely. */}
+        <div className="shrink-0 mt-2.5 grid grid-cols-1 lg:grid-cols-2 gap-x-5 gap-y-1.5">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-wider text-emerald-400 font-bold">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+              High Shelf
+            </div>
+            <EqParam
+              label="Freq"
+              value={settings.eq_high_cut_hz}
+              min={2000}
+              max={20000}
+              step={100}
+              accent="accent-emerald-500"
+              display={
+                settings.eq_high_cut_hz >= 1000
+                  ? `${(settings.eq_high_cut_hz / 1000).toFixed(1)}k`
+                  : `${settings.eq_high_cut_hz}`
+              }
+              onChange={(v) => onUpdateSettings({ eq_high_cut_hz: v })}
+            />
+            <EqParam
+              label="Gain"
+              value={settings.eq_high_cut_gain_db}
+              min={-12}
+              max={6}
+              step={0.1}
+              accent="accent-emerald-500"
+              display={`${settings.eq_high_cut_gain_db > 0 ? '+' : ''}${settings.eq_high_cut_gain_db.toFixed(1)}dB`}
+              onChange={(v) => onUpdateSettings({ eq_high_cut_gain_db: v })}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-wider text-cyan-400 font-bold">
+              <span className="w-2 h-2 rounded-full bg-cyan-500 inline-block" />
+              Bell / Mud Scoop
+            </div>
+            <EqParam
+              label="Freq"
+              value={settings.eq_mud_scoop_hz}
+              min={60}
+              max={2000}
+              step={5}
+              accent="accent-cyan-400"
+              display={`${settings.eq_mud_scoop_hz}Hz`}
+              onChange={(v) => onUpdateSettings({ eq_mud_scoop_hz: v })}
+            />
+            <EqParam
+              label="Gain"
+              value={settings.eq_mud_scoop_gain_db}
+              min={-12}
+              max={6}
+              step={0.1}
+              accent="accent-cyan-400"
+              display={`${settings.eq_mud_scoop_gain_db > 0 ? '+' : ''}${settings.eq_mud_scoop_gain_db.toFixed(1)}dB`}
+              onChange={(v) => onUpdateSettings({ eq_mud_scoop_gain_db: v })}
+            />
+            <EqParam
+              label="Q"
+              value={settings.eq_mud_scoop_q}
+              min={0.3}
+              max={8}
+              step={0.1}
+              accent="accent-cyan-400"
+              display={settings.eq_mud_scoop_q.toFixed(2)}
+              onChange={(v) => onUpdateSettings({ eq_mud_scoop_q: v })}
+            />
+          </div>
         </div>
       </div>
 
