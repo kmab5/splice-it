@@ -327,6 +327,45 @@ fn tpdf_noise(state: &mut u32, lsb: f32) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
+
+/// Write the finished mixdown in whichever format was requested.
+fn write_output_file(
+    interleaved: &[f32],
+    sample_rate: u32,
+    options: &ExportOptions,
+) -> Result<(), String> {
+    if let Some(parent) = Path::new(&options.export_path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Cannot create export folder: {}", e))?;
+    }
+
+    match options.format.as_str() {
+        "flac" => crate::encoders::write_flac(
+            &options.export_path,
+            interleaved,
+            sample_rate,
+            if options.flac_bit_depth == 16 { 16 } else { 24 },
+            options.dither,
+        ),
+        "mp3" => crate::encoders::write_mp3(
+            &options.export_path,
+            interleaved,
+            sample_rate,
+            if options.mp3_bitrate_kbps == 0 { 192 } else { options.mp3_bitrate_kbps },
+        ),
+        wav_format => write_wav_file(
+            &options.export_path,
+            interleaved,
+            sample_rate,
+            wav_format,
+            options.dither,
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // WAV output
 // ---------------------------------------------------------------------------
 
@@ -358,10 +397,7 @@ fn write_wav_file(
             sample_format: hound::SampleFormat::Int,
         },
         other => {
-            return Err(format!(
-                "Export format '{}' is not supported yet. Choose a WAV format.",
-                other
-            ))
+            return Err(format!("Unknown WAV variant '{}'.", other));
         }
     };
 
@@ -406,6 +442,23 @@ fn write_wav_file(
     writer
         .finalize()
         .map_err(|e| format!("WAV finalize error: {}", e))
+}
+
+/// Human-readable description of the chosen output format.
+fn describe_format(options: &ExportOptions) -> String {
+    match options.format.as_str() {
+        "flac" => format!(
+            "FLAC {}-bit",
+            if options.flac_bit_depth == 16 { 16 } else { 24 }
+        ),
+        "mp3" => format!(
+            "MP3 {} kbps",
+            if options.mp3_bitrate_kbps == 0 { 192 } else { options.mp3_bitrate_kbps }
+        ),
+        "wav_16" => "16-bit WAV".to_string(),
+        "wav_32f" => "32-bit float WAV".to_string(),
+        _ => "24-bit WAV".to_string(),
+    }
 }
 
 fn peak_of(samples: &[f32]) -> f32 {
@@ -728,14 +781,8 @@ pub async fn export_project(
         let peak = peak_of(&interleaved);
         let peak_db = peak_to_db(peak);
 
-        // 6. Write the WAV.
-        write_wav_file(
-            &options.export_path,
-            &interleaved,
-            sample_rate,
-            &options.format,
-            options.dither,
-        )?;
+        // 6. Write the output file.
+        write_output_file(&interleaved, sample_rate, &options)?;
 
         // 7. Embed the project's metadata into the finished file.
         // A tagging failure should not discard a good render, so it is reported
@@ -753,8 +800,9 @@ pub async fn export_project(
             sample_rate,
             format: options.format.clone(),
             message: format!(
-                "Exported {:.1}s mixdown at {} kHz{}",
+                "Exported {:.1}s mixdown as {} at {} kHz{}",
                 total_duration_ms / 1000.0,
+                describe_format(&options),
                 sample_rate as f64 / 1000.0,
                 tag_note
             ),
@@ -935,13 +983,7 @@ pub async fn export_concat(
         let peak_db = peak_to_db(peak_of(&interleaved));
 
         // 5. Write and tag.
-        write_wav_file(
-            &options.export_path,
-            &interleaved,
-            sample_rate,
-            &options.format,
-            options.dither,
-        )?;
+        write_output_file(&interleaved, sample_rate, &options)?;
 
         let tag_note = match write_tags(&options.export_path, &request.metadata) {
             Ok(()) => String::new(),
@@ -958,10 +1000,11 @@ pub async fn export_concat(
             sample_rate,
             format: options.format.clone(),
             message: format!(
-                "Joined {} file{} into {:.1}s at {} kHz{}{}",
+                "Joined {} file{} into {:.1}s of {} at {} kHz{}{}",
                 request.items.len(),
                 if request.items.len() == 1 { "" } else { "s" },
                 duration_ms / 1000.0,
+                describe_format(&options),
                 sample_rate as f64 / 1000.0,
                 note,
                 tag_note

@@ -3,6 +3,7 @@
 
 mod commands;
 mod dsp;
+mod encoders;
 mod models;
 
 use commands::{

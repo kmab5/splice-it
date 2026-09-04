@@ -132,14 +132,29 @@ export interface WaveformPeaks {
   channels: number;
 }
 
-/** WAV only for now. Compressed formats are a later milestone. */
-export type ExportFormat = 'wav_16' | 'wav_24' | 'wav_32f';
+export type ExportFormat = 'wav_16' | 'wav_24' | 'wav_32f' | 'flac' | 'mp3';
 
 export interface ExportOptions {
   export_path: string;
   format: ExportFormat;
   normalize_to_target_lufs: boolean;
   dither: boolean;
+  /** MP3 constant bitrate in kbps. */
+  mp3_bitrate_kbps: number;
+  /** FLAC output resolution: 16 or 24. */
+  flac_bit_depth: number;
+}
+
+/** File extension for a format, used for the save dialog and default filename. */
+export function formatExtension(format: ExportFormat): string {
+  if (format === 'flac') return 'flac';
+  if (format === 'mp3') return 'mp3';
+  return 'wav';
+}
+
+/** True for formats that discard resolution, where dithering is meaningful. */
+export function formatUsesDither(format: ExportFormat): boolean {
+  return format === 'wav_16' || format === 'wav_24' || format === 'flac';
 }
 
 /** Mirrors the Rust `ExportResult`. */

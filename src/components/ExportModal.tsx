@@ -1,5 +1,12 @@
 import React, { useState } from 'react';
-import { ExportFormat, ExportOptions, ExportResult, MetadataDto } from '../types/project';
+import {
+  ExportFormat,
+  ExportOptions,
+  ExportResult,
+  MetadataDto,
+  formatExtension,
+  formatUsesDither,
+} from '../types/project';
 import { isTauri, pickSavePath } from '../services/ipc';
 import { X, Download, ShieldCheck, CheckCircle2, AlertCircle, Loader2, FolderOpen } from 'lucide-react';
 
@@ -22,23 +29,40 @@ interface ExportModalProps {
   ) => Promise<{ success: boolean; message: string; result?: ExportResult }>;
 }
 
-const FORMATS: { id: ExportFormat; title: string; blurb: string }[] = [
+const FORMATS: { id: ExportFormat; title: string; blurb: string; lossless: boolean }[] = [
   {
     id: 'wav_24',
-    title: 'WAV 24-bit PCM',
-    blurb: 'Industry standard for mastering and delivery',
+    title: 'WAV 24-bit',
+    blurb: 'Standard for mastering and delivery',
+    lossless: true,
   },
   {
     id: 'wav_16',
-    title: 'WAV 16-bit PCM',
-    blurb: 'CD standard, smallest uncompressed file',
+    title: 'WAV 16-bit',
+    blurb: 'CD standard, smallest uncompressed',
+    lossless: true,
   },
   {
     id: 'wav_32f',
     title: 'WAV 32-bit Float',
-    blurb: 'Full headroom, no clipping on render',
+    blurb: 'Full headroom, no clipping',
+    lossless: true,
+  },
+  {
+    id: 'flac',
+    title: 'FLAC',
+    blurb: 'Lossless, roughly half the size of WAV',
+    lossless: true,
+  },
+  {
+    id: 'mp3',
+    title: 'MP3',
+    blurb: 'Lossy, plays everywhere',
+    lossless: false,
   },
 ];
+
+const MP3_BITRATES = [128, 160, 192, 256, 320];
 
 export const ExportModal: React.FC<ExportModalProps> = ({
   isOpen,
@@ -54,6 +78,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [format, setFormat] = useState<ExportFormat>('wav_24');
   const [normalizeLufs, setNormalizeLufs] = useState(true);
   const [dither, setDither] = useState(true);
+  const [mp3Bitrate, setMp3Bitrate] = useState(192);
+  const [flacBitDepth, setFlacBitDepth] = useState(24);
   const [isExporting, setIsExporting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isSuccess, setIsSuccess] = useState<boolean | null>(null);
@@ -64,20 +90,21 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const clipCount = itemCount;
   const canExport = clipCount > 0 && !isExporting;
   // Dither only means anything when truncating to a fixed-point format.
-  const ditherApplies = format !== 'wav_32f';
+  const ditherApplies = formatUsesDither(format) && !(format === 'flac' && flacBitDepth === 24);
+  const extension = formatExtension(format);
 
   const handleStartExport = async () => {
     setResult(null);
     setIsSuccess(null);
 
     const safeName = defaultFileName.replace(/[^a-zA-Z0-9_-]/g, '_') || 'Splice_It_Output';
-    let exportPath = `${safeName}.wav`;
+    let exportPath = `${safeName}.${extension}`;
 
     // Ask the user where the file goes. The previous build wrote to a relative
     // "./exports" folder, which on a packaged Windows app resolves inside
     // Program Files and fails.
     if (isTauri()) {
-      const chosen = await pickSavePath(exportPath, ['wav'], 'Export mixdown');
+      const chosen = await pickSavePath(exportPath, [extension], 'Export mixdown');
       if (!chosen) return;
       exportPath = chosen;
     }
@@ -90,6 +117,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       format,
       normalize_to_target_lufs: normalizeLufs,
       dither: dither && ditherApplies,
+      mp3_bitrate_kbps: mp3Bitrate,
+      flac_bit_depth: flacBitDepth,
     };
 
     const res = await onExport(options);
@@ -138,7 +167,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             <label className="block text-[10px] uppercase tracking-wider text-slate-400 mb-1.5 font-semibold">
               Audio Format & Bit Depth
             </label>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               {FORMATS.map((f) => (
                 <button
                   key={f.id}
@@ -150,13 +179,79 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                       : 'border-slate-800 bg-slate-950 hover:bg-slate-800/60 text-slate-300'
                   }`}
                 >
-                  <div className="font-bold">{f.title}</div>
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="font-bold">{f.title}</span>
+                    {!f.lossless && (
+                      <span className="text-[9px] text-amber-400/90 font-mono">lossy</span>
+                    )}
+                  </div>
                   <div className="text-[10px] text-slate-500 mt-0.5">{f.blurb}</div>
                 </button>
               ))}
             </div>
+
+            {/* Per-format options */}
+            {format === 'mp3' && (
+              <div className="mt-2 bg-slate-950/80 p-2.5 rounded-lg border border-slate-800">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
+                    Bitrate
+                  </span>
+                  <span className="font-mono text-[10px] text-emerald-400">{mp3Bitrate} kbps</span>
+                </div>
+                <div className="flex gap-1.5">
+                  {MP3_BITRATES.map((rate) => (
+                    <button
+                      key={rate}
+                      type="button"
+                      onClick={() => setMp3Bitrate(rate)}
+                      className={`flex-1 py-1 rounded text-[11px] font-mono border transition ${
+                        mp3Bitrate === rate
+                          ? 'border-emerald-500 bg-emerald-950/40 text-emerald-300'
+                          : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {rate}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1.5">
+                  MP3 supports up to 48 kHz. A 96 kHz project will be refused — export WAV or
+                  FLAC instead.
+                </p>
+              </div>
+            )}
+
+            {format === 'flac' && (
+              <div className="mt-2 bg-slate-950/80 p-2.5 rounded-lg border border-slate-800">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
+                    Bit Depth
+                  </span>
+                  <span className="font-mono text-[10px] text-emerald-400">{flacBitDepth}-bit</span>
+                </div>
+                <div className="flex gap-1.5">
+                  {[16, 24].map((depth) => (
+                    <button
+                      key={depth}
+                      type="button"
+                      onClick={() => setFlacBitDepth(depth)}
+                      className={`flex-1 py-1 rounded text-[11px] font-mono border transition ${
+                        flacBitDepth === depth
+                          ? 'border-emerald-500 bg-emerald-950/40 text-emerald-300'
+                          : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {depth}-bit
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <p className="text-[10px] text-slate-500 mt-1.5">
-              FLAC and MP3 export are planned for a later milestone.
+              Saving as <span className="font-mono text-slate-400">.{extension}</span> — tags are
+              embedded in every format.
             </p>
           </div>
 
@@ -194,7 +289,12 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                 />
                 <span className="text-slate-300">
                   Apply TPDF dithering
-                  {!ditherApplies && ' (not used for float output)'}
+                  {!ditherApplies &&
+                    (format === 'mp3'
+                      ? ' (not used for MP3)'
+                      : format === 'flac'
+                      ? ' (not needed at 24-bit)'
+                      : ' (not used for float output)')}
                 </span>
               </label>
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />

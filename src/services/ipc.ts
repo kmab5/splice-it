@@ -208,6 +208,13 @@ export async function exportProject(
     }
   }
 
+  if (options.format === 'flac' || options.format === 'mp3') {
+    return {
+      success: false,
+      message: `${options.format.toUpperCase()} encoding runs in the Rust backend, so it needs the desktop app. Choose a WAV format here.`,
+    };
+  }
+
   try {
     const rendered = await renderAndExportWav(project, audioEngine.sourceBuffers, options);
     const a = document.createElement('a');

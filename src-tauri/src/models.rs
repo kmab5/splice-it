@@ -162,14 +162,20 @@ pub struct AudioFileInfo {
     pub metadata: MetadataDto,
 }
 
-/// Options for mixdown export. Only WAV targets are supported at this stage.
+/// Options for mixdown export.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportOptions {
     pub export_path: String,
-    /// "wav_16" | "wav_24" | "wav_32f"
+    /// "wav_16" | "wav_24" | "wav_32f" | "flac" | "mp3"
     pub format: String,
     pub normalize_to_target_lufs: bool,
     pub dither: bool,
+    /// MP3 constant bitrate. Defaults to 192 when absent or unrecognised.
+    #[serde(default)]
+    pub mp3_bitrate_kbps: u32,
+    /// FLAC output resolution, 16 or 24. Defaults to 24.
+    #[serde(default)]
+    pub flac_bit_depth: u32,
 }
 
 /// Result of a completed mixdown render.

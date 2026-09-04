@@ -1,6 +1,6 @@
 [package]
 name = "splice-it"
-version = "0.2.7"
+version = "0.2.8"
 description = "Splice It - Modern High-Performance Desktop Audio Workspace"
 authors = ["Splice It Team"]
 edition = "2021"
@@ -15,6 +15,10 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 symphonia = { version = "0.5.4", features = ["all"] }
 hound = "3.5.1"
+# Pure-Rust FLAC encoder: no C toolchain needed.
+flacenc = "0.4"
+# Safe wrapper around libmp3lame; mp3lame-sys builds the C source with `cc`.
+mp3lame-encoder = "0.2"
 lofty = "0.21.1"
 base64 = "0.22.1"
 log = "0.4.22"
