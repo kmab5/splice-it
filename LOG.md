@@ -1,115 +1,176 @@
 # Splice It — Change Log
 
-## Turn 10 — v0.2.10 — Step 7: Release readiness
+## Turn 11 — v0.2.11 — Concat seeking, concat undo, VBR/FLAC options, releases
 
-Versions bumped to **0.2.10** across `package.json`, `src-tauri/Cargo.toml` and
+Versions bumped to **0.2.11** across `package.json`, `src-tauri/Cargo.toml` and
 `src-tauri/tauri.conf.json`.
 
 ---
 
-### Seeking (your request)
+### 1. The concat timeline is now seekable
 
-**The playhead can now go anywhere.** The timeline ended exactly where the last
-clip did, so there was nowhere to park the playhead past the content. A 30-second
-runway is kept beyond the final clip, and the scroll extent follows it.
+The sequence strip did have a click-to-seek handler, but every file block drawn
+on top of it called `stopPropagation` to handle selection — and the blocks cover
+almost the whole strip. So clicks only reached the seek handler in the gaps
+between files, which is why it felt dead.
 
-**Arrow keys scrub**, in both workspaces:
+Fixed properly:
 
-| Keys | Step |
-|---|---|
-| `←` / `→` | 5 seconds |
-| `Ctrl` + `←` / `→` | 15 seconds |
-| `Alt` + `←` / `→` | 30 seconds |
+- **Click or drag anywhere** on the strip to scrub, blocks included.
+- **Double-click** a block to select that file, which is what the block click
+  used to do.
+- **Seeking during playback keeps playing.** It used to stop the transport and
+  clear the play state, so you could not scrub while listening. It now restarts
+  the sequence from the new position.
+- Arrow-key seeking already worked in concat mode from last turn, and now lines
+  up with the strip: `←`/`→` 5s, `Ctrl` 15s, `Alt` 30s.
 
-Rewind and fast-forward buttons sit either side of play in the transport. They
-respect the same modifiers — Ctrl-click for 15s, Alt-click for 30s — and the
-tooltips say so.
+### 2. Undo and redo for concat
 
-### App icons
+History held only `ProjectState`, so nothing done in concat mode was visible to
+undo. An entry is now a snapshot of **both** workspaces, so undo works across a
+mode switch and cannot leave the two out of step with each other.
 
-The bundle was still shipping the default Tauri icon. Regenerated the full set
-from `public/assets/logo.png` with `tauri icon`: Windows `.ico`, macOS `.icns`,
-every PNG size, and the Store/Square assets the MSI uses. Installer branding and
-the taskbar icon now match the app.
+Two details worth noting:
 
-### Double-clicking a .sic opens it
+- Concat edits stream in continuously while a slider is dragged. Pushing on each
+  one would bury the stack in near-identical entries, so rapid successive
+  changes fold into the first one (600 ms window).
+- Undo stops both transports before restoring, since the restored state may not
+  contain whatever was playing.
 
-`tauri.conf.json` has declared a `.sic` / `.audioproj` file association since the
-start, but nothing ever read the path the shell passes in. `main.rs` now captures
-it at startup into managed state, and a `take_launch_file` command hands it to
-the frontend once.
+The depth also went from 25 entries to 50.
 
-Startup now resolves a project in priority order:
+### 3. VBR MP3 and FLAC compression
 
-1. A file passed on the command line (double-clicking a project).
-2. The most recent project, when "reopen last" is enabled.
+Both are real knobs, checked against the crate sources rather than assumed.
 
-### Quit warning for unsaved changes
+**MP3** now offers CBR or VBR. VBR uses LAME's MTRH mode with a V0-V9 quality
+slider, and writes the Xing/LAME header — without which players report the wrong
+duration and cannot seek accurately in a VBR file. The UI notes that V2 is the
+usual near-transparent choice.
 
-The `confirmOnDiscard` setting existed but nothing consumed it. Tauri closes the
-native window without consulting the page, so `beforeunload` is not enough — this
-hooks `onCloseRequested`, offers to save, and only then destroys the window.
-Cancelling the save dialog cancels the quit too, rather than losing the work.
+**FLAC** gets Fast / Balanced / Maximum. `flacenc` does not expose libFLAC's 0-8
+preset scale, so rather than fake a slider these map onto settings it does have:
 
-This needed two extra capability permissions (`core:window:allow-close` and
-`core:window:allow-destroy`) since the frontend now closes the window itself.
+- **Fast** — fixed LPC only (`use_lpc = false`), which is where most of the
+  encoding time goes. Larger files.
+- **Balanced** — the crate defaults.
+- **Maximum** — LPC order 24 and coefficient precision 15, both the maximum the
+  encoder verifies.
 
-### First-run screen
+Lossless either way; this only trades encoding time against size. The export
+result message reports what was used, e.g. "FLAC 24-bit (maximum)" or
+"MP3 VBR V2".
 
-A welcome screen on first launch explains the two workspaces side by side, with
-one line on when each is the right choice, plus the shortcuts worth knowing.
-Choosing a workspace switches straight to it. Dismissed permanently once seen.
+### 4. Tagged releases (moved up from step 9)
 
-### README
+The workflow now publishes a GitHub Release when you push a `v*` tag, with all
+three files attached and named by version:
 
-Added `README.md` covering what the app does, installing from the CI artifacts,
-building locally and in CI, the full shortcut table, the project file format,
-a map of the source layout, how audio flows through the system, and the known
-limitations.
+- `SpliceIt_<version>_x64-setup.exe` — NSIS installer
+- `SpliceIt_<version>_x64.msi` — MSI, for Group Policy or Intune
+- `SpliceIt_<version>_portable.exe` — standalone, no installer
+
+A manual **Run workflow** still just produces artifacts without creating a
+release. Release notes are generated automatically and include a download table
+and the SmartScreen note.
+
+```bash
+git tag v0.2.11
+git push --tags
+```
+
+---
+
+### On "per-clip gain automation"
+
+Fair question — it was jargon. Right now a clip has one fixed gain plus a fade
+in and a fade out. Automation would let you draw a **volume curve across the
+clip**: click to add points on a line over the waveform and drag them, so the
+level can dip under a voiceover halfway through, swell for a chorus, and so on,
+rather than being one value for the whole clip.
+
+It is a timeline feature and a fairly large one — it needs an editable envelope
+in the canvas, in the playback engine, and in the Rust exporter. **It is not
+something concat mode needs**, and if your main use is joining files you can
+happily skip it. I have parked it as optional rather than planned; say the word
+if you want it.
+
+---
+
+### Code signing, in short
+
+The full write-up with copy-pasteable config is now in the README. The summary:
+
+- You need an **OV code signing certificate** from a CA (Sectigo, DigiCert,
+  SSL.com), roughly $200-400/year. There is no free route — the point is that
+  someone verified your identity.
+- **EV certificates** clear SmartScreen immediately. With OV, reputation builds
+  over downloads and time, so early users may still see the warning.
+- Since June 2023 all new certificates must live on **hardware** — a USB token,
+  or a cloud HSM. Cloud HSM is the only workable option for CI, since a GitHub
+  runner cannot plug in a USB token.
+- Tauri signs during bundling once `certificateThumbprint` is set in
+  `tauri.conf.json`, with the certificate imported from repository secrets.
+- **Always set `timestampUrl`.** Without a timestamp, every signature stops
+  validating the day the certificate expires. With one, they stay valid forever.
+
+### Auto-updates, in short
+
+Also written up fully in the README:
+
+- Tauri's updater is separate from code signing and uses **its own key pair**,
+  which you generate yourself for free with `tauri signer generate`.
+- Add `tauri-plugin-updater`, put the public key in `tauri.conf.json`, and point
+  the endpoint at
+  `https://github.com/<user>/splice-it/releases/latest/download/latest.json`.
+  That URL always resolves to the newest release, so **no server is needed** —
+  which fits the release workflow that now exists.
+- Building with the signing key in the environment produces `.sig` files and
+  `latest.json` next to the installers; attach them to the release.
+- Two gotchas: updates are **full downloads**, not patches. And once code
+  signing is in place, updates must use the **same certificate** as the original
+  install or Windows treats them as a different application.
 
 ---
 
 ### Files changed
 
-`README.md` (new), `package.json`, `src-tauri/Cargo.toml`,
-`src-tauri/tauri.conf.json`, `src-tauri/capabilities/default.json`,
-`src-tauri/src/main.rs`, `src-tauri/src/commands.rs`,
-`src-tauri/icons/*` (regenerated), `src/App.tsx`,
-`src/components/TopNavbar.tsx`, `src/components/WelcomeModal.tsx` (new),
-`src/services/ipc.ts`, `src/types/project.ts`.
+`README.md`, `.github/workflows/build-windows.yml`, `package.json`,
+`src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`,
+`src-tauri/src/encoders.rs`, `src-tauri/src/commands.rs`,
+`src-tauri/src/models.rs`, `src/App.tsx`,
+`src/components/ConcatWorkspace.tsx`, `src/components/ExportModal.tsx`,
+`src/types/project.ts`.
 
 `tsc --noEmit` passes and `vite build` succeeds.
 
-One thing worth flagging: the quit guard reads `autoSaveRef`, and I had first
-placed that effect above the ref's declaration. It would have worked, since the
-effect body only runs after the component finishes rendering, but relying on that
-is the kind of thing that breaks silently later. Moved it below.
+**One thing I should own.** While refactoring the undo history I sliced out a
+block of state declarations by accident — the edit removed everything between
+two markers, and the concat state happened to sit between them. It was caught
+immediately by the type-checker, and I restored `App.tsx` from the v0.2.10
+package and redid the change with targeted replacements instead. Nothing else
+from this turn was affected, since the other work was in different files. Worth
+mentioning so you know the file was rebuilt rather than patched in place.
 
 ---
 
 ### Worth testing
 
-- Click well past the end of your audio in the timeline and confirm the playhead
-  parks there.
-- Hold Ctrl and Alt while pressing the arrow keys and check the step sizes.
-- Save a project, close the app, and double-click the `.sic` in Explorer.
-- Make an edit and close the window — you should be offered a save, and
-  cancelling that dialog should cancel the quit.
-- Check the installer and taskbar icons are the logo rather than the Tauri
-  default.
+- Drag across the concat strip while it is playing — the playhead should follow
+  and audio should continue from the new spot.
+- Reorder concat items, change a gap, then Ctrl+Z a few times.
+- Export the same material as MP3 CBR 320 and VBR V2 and compare size and
+  quality.
+- Export FLAC at Fast and at Maximum and compare file size and encode time.
+- Push a tag and confirm the release appears with all three files.
 
 ---
 
 ## Remaining plan
 
-### Step 8 — Optional extras
-- Undo/redo for concat mode, which currently only covers the timeline.
-- Batch export: render each concat item separately as well as joined.
-- VBR MP3, and a FLAC compression knob if `flacenc` exposes a usable one.
-- Per-clip gain automation in the timeline.
-
-### Step 9 — Distribution
-- Code signing, so Windows SmartScreen stops warning on first run.
-- An auto-update feed via the Tauri updater.
-- Tagged releases that attach the installers automatically, rather than leaving
-  them as workflow artifacts.
+### Optional
+- Per-clip gain automation (see above) — only if you want it.
+- Code signing, once a certificate is in hand.
+- Auto-update feed, which the release workflow now makes straightforward.

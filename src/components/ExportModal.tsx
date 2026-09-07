@@ -79,7 +79,10 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [normalizeLufs, setNormalizeLufs] = useState(true);
   const [dither, setDither] = useState(true);
   const [mp3Bitrate, setMp3Bitrate] = useState(192);
+  const [mp3Vbr, setMp3Vbr] = useState(false);
+  const [mp3VbrQuality, setMp3VbrQuality] = useState(2);
   const [flacBitDepth, setFlacBitDepth] = useState(24);
+  const [flacCompression, setFlacCompression] = useState(1);
   const [isExporting, setIsExporting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isSuccess, setIsSuccess] = useState<boolean | null>(null);
@@ -119,6 +122,9 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       dither: dither && ditherApplies,
       mp3_bitrate_kbps: mp3Bitrate,
       flac_bit_depth: flacBitDepth,
+      mp3_vbr: mp3Vbr,
+      mp3_vbr_quality: mp3VbrQuality,
+      flac_compression: flacCompression,
     };
 
     const res = await onExport(options);
@@ -192,30 +198,88 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
             {/* Per-format options */}
             {format === 'mp3' && (
-              <div className="mt-2 bg-slate-950/80 p-2.5 rounded-lg border border-slate-800">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
-                    Bitrate
-                  </span>
-                  <span className="font-mono text-[10px] text-emerald-400">{mp3Bitrate} kbps</span>
-                </div>
-                <div className="flex gap-1.5">
-                  {MP3_BITRATES.map((rate) => (
+              <div className="mt-2 bg-slate-950/80 p-2.5 rounded-lg border border-slate-800 space-y-2">
+                <div className="flex items-center gap-1.5">
+                  {(
+                    [
+                      { vbr: false, label: 'Constant (CBR)' },
+                      { vbr: true, label: 'Variable (VBR)' },
+                    ] as const
+                  ).map((opt) => (
                     <button
-                      key={rate}
+                      key={opt.label}
                       type="button"
-                      onClick={() => setMp3Bitrate(rate)}
-                      className={`flex-1 py-1 rounded text-[11px] font-mono border transition ${
-                        mp3Bitrate === rate
+                      onClick={() => setMp3Vbr(opt.vbr)}
+                      className={`flex-1 py-1 rounded text-[11px] border transition ${
+                        mp3Vbr === opt.vbr
                           ? 'border-emerald-500 bg-emerald-950/40 text-emerald-300'
                           : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200'
                       }`}
                     >
-                      {rate}
+                      {opt.label}
                     </button>
                   ))}
                 </div>
-                <p className="text-[10px] text-slate-500 mt-1.5">
+
+                {mp3Vbr ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
+                        Quality
+                      </span>
+                      <span className="font-mono text-[10px] text-emerald-400">
+                        V{mp3VbrQuality}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={9}
+                      step={1}
+                      value={mp3VbrQuality}
+                      onChange={(e) => setMp3VbrQuality(Number(e.target.value))}
+                      className="w-full si-slider [--si-accent:#10b981]"
+                    />
+                    <div className="flex justify-between text-[9px] text-slate-500 font-mono">
+                      <span>V0 best, ~245 kbps</span>
+                      <span>V9 smallest, ~65 kbps</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500">
+                      VBR spends bits where the material needs them, so for a given average
+                      size it usually sounds better than CBR. V2 is the common choice for
+                      near-transparent files.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
+                        Bitrate
+                      </span>
+                      <span className="font-mono text-[10px] text-emerald-400">
+                        {mp3Bitrate} kbps
+                      </span>
+                    </div>
+                    <div className="flex gap-1.5">
+                      {MP3_BITRATES.map((rate) => (
+                        <button
+                          key={rate}
+                          type="button"
+                          onClick={() => setMp3Bitrate(rate)}
+                          className={`flex-1 py-1 rounded text-[11px] font-mono border transition ${
+                            mp3Bitrate === rate
+                              ? 'border-emerald-500 bg-emerald-950/40 text-emerald-300'
+                              : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          {rate}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                <p className="text-[10px] text-slate-500">
                   MP3 supports up to 48 kHz. A 96 kHz project will be refused — export WAV or
                   FLAC instead.
                 </p>
@@ -246,6 +310,37 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                     </button>
                   ))}
                 </div>
+
+                <div className="flex items-center justify-between mt-2.5 mb-1.5">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
+                    Compression
+                  </span>
+                </div>
+                <div className="flex gap-1.5">
+                  {(
+                    [
+                      { id: 0, label: 'Fast' },
+                      { id: 1, label: 'Balanced' },
+                      { id: 2, label: 'Maximum' },
+                    ] as const
+                  ).map((level) => (
+                    <button
+                      key={level.id}
+                      type="button"
+                      onClick={() => setFlacCompression(level.id)}
+                      className={`flex-1 py-1 rounded text-[11px] border transition ${
+                        flacCompression === level.id
+                          ? 'border-emerald-500 bg-emerald-950/40 text-emerald-300'
+                          : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {level.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1.5">
+                  Lossless either way — this only trades encoding time against file size.
+                </p>
               </div>
             )}
 

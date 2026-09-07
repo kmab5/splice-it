@@ -2,12 +2,17 @@ name: Build Windows Installers
 
 # Cross-compiling a Tauri app from Linux to Windows is impractical (the MSI and
 # NSIS bundlers need Windows tooling), so the build runs on a Windows runner
-# instead. Trigger it by hand from the Actions tab, or push a v* tag.
+# instead. Trigger it by hand from the Actions tab, or push a v* tag to build
+# and publish a GitHub Release with the installers attached.
 on:
   workflow_dispatch:
   push:
     tags:
       - 'v*'
+
+# Needed so the release job can create a release and upload assets.
+permissions:
+  contents: write
 
 jobs:
   build-windows:
@@ -44,25 +49,62 @@ jobs:
       - name: Build Tauri app
         run: npm run tauri:build
 
-      - name: Upload MSI installer
-        uses: actions/upload-artifact@v4
-        with:
-          name: splice-it-msi
-          path: src-tauri/target/release/bundle/msi/*.msi
-          if-no-files-found: warn
+      # Collect everything into one folder so the release step has a simple
+      # glob and the artifact names stay predictable.
+      - name: Stage release files
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          echo "APP_VERSION=$version" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force -Path dist-release | Out-Null
 
-      - name: Upload NSIS setup executable
-        uses: actions/upload-artifact@v4
-        with:
-          name: splice-it-setup-exe
-          path: src-tauri/target/release/bundle/nsis/*-setup.exe
-          if-no-files-found: warn
+          $bundle = "src-tauri/target/release/bundle"
+          Get-ChildItem -Path "$bundle/msi"  -Filter *.msi -ErrorAction SilentlyContinue |
+            ForEach-Object { Copy-Item $_.FullName "dist-release/SpliceIt_${version}_x64.msi" }
+          Get-ChildItem -Path "$bundle/nsis" -Filter *-setup.exe -ErrorAction SilentlyContinue |
+            ForEach-Object { Copy-Item $_.FullName "dist-release/SpliceIt_${version}_x64-setup.exe" }
 
-      # Portable build: the raw exe with no installer. Useful for quick testing,
-      # but it must sit next to the WebView2 runtime already present on Windows.
-      - name: Upload portable executable
+          # Standalone executable, no installer.
+          if (Test-Path "src-tauri/target/release/splice-it.exe") {
+            Copy-Item "src-tauri/target/release/splice-it.exe" `
+                      "dist-release/SpliceIt_${version}_portable.exe"
+          }
+
+          Get-ChildItem dist-release | Format-Table Name, Length
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: splice-it-portable-exe
-          path: src-tauri/target/release/splice-it.exe
-          if-no-files-found: warn
+          name: splice-it-windows-${{ env.APP_VERSION }}
+          path: dist-release/*
+          if-no-files-found: error
+
+      # Only on a v* tag. A manual run just leaves the artifacts above.
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Splice It ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: dist-release/*
+          body: |
+            ## Splice It ${{ github.ref_name }}
+
+            ### Downloads
+
+            | File | Use it if |
+            |---|---|
+            | `SpliceIt_${{ env.APP_VERSION }}_x64-setup.exe` | You want the usual installer (recommended) |
+            | `SpliceIt_${{ env.APP_VERSION }}_x64.msi` | You are deploying via Group Policy or Intune |
+            | `SpliceIt_${{ env.APP_VERSION }}_portable.exe` | You would rather not install anything |
+
+            Windows 11 and current Windows 10 already include the WebView2
+            runtime, so nothing else is needed.
+
+            ### A note on the SmartScreen warning
+
+            These builds are not code-signed yet, so Windows will show
+            "Windows protected your PC" on first run. Choose **More info** then
+            **Run anyway**. Signing is planned.

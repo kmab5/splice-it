@@ -88,6 +88,15 @@ const INITIAL_PROJECT: ProjectState = {
   audio_pool: [],
 };
 
+/**
+ * One undo entry. History covers both workspaces: it used to hold only
+ * ProjectState, so anything done in concat mode was invisible to undo.
+ */
+interface WorkspaceSnapshot {
+  project: ProjectState;
+  concat: ConcatState;
+}
+
 export default function App() {
   const [project, setProject] = useState<ProjectState>(INITIAL_PROJECT);
   const [currentTimeMs, setCurrentTimeMs] = useState<number>(0);
@@ -152,7 +161,10 @@ export default function App() {
   const [rightSidebarTab, setRightSidebarTab] = useState<'project' | 'audio_pool'>('project');
 
   // History state for Undo / Redo
-  const [history, setHistory] = useState<{ past: ProjectState[]; future: ProjectState[] }>({
+  const [history, setHistory] = useState<{
+    past: WorkspaceSnapshot[];
+    future: WorkspaceSnapshot[];
+  }>({
     past: [],
     future: [],
   });
@@ -269,41 +281,70 @@ export default function App() {
 
   const timelineContainerRef = useRef<HTMLDivElement>(null);
 
-  // Helper to record history before mutating project
-  const pushHistory = useCallback(
-    (currentState: ProjectState) => {
-      setHistory((prev) => ({
-        past: [...prev.past.slice(-25), JSON.parse(JSON.stringify(currentState))],
-        future: [],
-      }));
-    },
-    []
-  );
+  // Current state, readable from callbacks without making them depend on it.
+  const currentRef = useRef<WorkspaceSnapshot>({ project, concat });
+  useEffect(() => {
+    currentRef.current = { project, concat };
+  }, [project, concat]);
+
+  const cloneSnapshot = (snap: WorkspaceSnapshot): WorkspaceSnapshot => ({
+    project: JSON.parse(JSON.stringify(snap.project)),
+    concat: JSON.parse(JSON.stringify(snap.concat)),
+  });
+
+  /** Record the current state of both workspaces before mutating either. */
+  const pushHistory = useCallback(() => {
+    setHistory((prev) => ({
+      past: [...prev.past.slice(-49), cloneSnapshot(currentRef.current)],
+      future: [],
+    }));
+  }, []);
+
+  /**
+   * Concat edits arrive continuously while a slider is dragged, so pushing on
+   * every change would fill the stack with near-identical entries. Rapid
+   * successive changes fold into the first one.
+   */
+  const lastConcatHistoryRef = useRef<number>(0);
+  const pushConcatHistory = useCallback(() => {
+    const now = Date.now();
+    if (now - lastConcatHistoryRef.current < 600) return;
+    lastConcatHistoryRef.current = now;
+    pushHistory();
+  }, [pushHistory]);
+
+  const applySnapshot = useCallback((snap: WorkspaceSnapshot) => {
+    // Both transports stop: the restored state may not contain what is playing.
+    audioEngine.stop();
+    setIsPlaying(false);
+    setIsConcatPlaying(false);
+    setProject(snap.project);
+    setConcat(snap.concat);
+    setSelectedClipId(null);
+  }, []);
 
   // Undo / Redo Actions
   const handleUndo = useCallback(() => {
     setHistory((prev) => {
       if (prev.past.length === 0) return prev;
-      const previousState = prev.past[prev.past.length - 1];
-      const newPast = prev.past.slice(0, prev.past.length - 1);
-      const newFuture = [JSON.parse(JSON.stringify(project)), ...prev.future];
-
-      setProject(previousState);
-      return { past: newPast, future: newFuture };
+      applySnapshot(prev.past[prev.past.length - 1]);
+      return {
+        past: prev.past.slice(0, -1),
+        future: [cloneSnapshot(currentRef.current), ...prev.future],
+      };
     });
-  }, [project]);
+  }, [applySnapshot]);
 
   const handleRedo = useCallback(() => {
     setHistory((prev) => {
       if (prev.future.length === 0) return prev;
-      const nextState = prev.future[0];
-      const newFuture = prev.future.slice(1);
-      const newPast = [...prev.past, JSON.parse(JSON.stringify(project))];
-
-      setProject(nextState);
-      return { past: newPast, future: newFuture };
+      applySnapshot(prev.future[0]);
+      return {
+        past: [...prev.past, cloneSnapshot(currentRef.current)],
+        future: prev.future.slice(1),
+      };
     });
-  }, [project]);
+  }, [applySnapshot]);
 
   // Sync master DSP settings with AudioEngine live
   useEffect(() => {
@@ -450,7 +491,7 @@ export default function App() {
   /** History is recorded once when the picker opens, not on every colour tweak. */
   const handleOpenColorPicker = useCallback(
     (index: number, anchor?: DOMRect) => {
-      pushHistory(project);
+      pushHistory();
       setColorPicker({ trackIndex: index, anchor: anchor ?? null });
       setSelectedTrackIndex(index);
     },
@@ -458,7 +499,7 @@ export default function App() {
   );
 
   const handleAddTrack = () => {
-    pushHistory(project);
+    pushHistory();
     const newIdx = project.tracks.length;
     const randomColor = getRandomTrackColor(project.tracks);
     const newTrack: TrackState = {
@@ -476,7 +517,7 @@ export default function App() {
 
   const handleDeleteTrack = (trackId: string) => {
     if (project.tracks.length <= 1) return;
-    pushHistory(project);
+    pushHistory();
     const index = project.tracks.findIndex((t) => t.id === trackId);
     if (index === -1) return;
 
@@ -503,7 +544,7 @@ export default function App() {
 
   const handlePasteTrack = () => {
     if (!clipboardTrack) return;
-    pushHistory(project);
+    pushHistory();
     const newIndex = project.tracks.length;
     const randomColor = getRandomTrackColor(project.tracks);
     const newTrack: TrackState = {
@@ -530,7 +571,7 @@ export default function App() {
   const handleDuplicateTrack = (trackIndex: number) => {
     const track = project.tracks[trackIndex];
     if (!track) return;
-    pushHistory(project);
+    pushHistory();
     const newIndex = project.tracks.length;
     const randomColor = getRandomTrackColor(project.tracks);
     const newTrack: TrackState = {
@@ -563,7 +604,7 @@ export default function App() {
   };
 
   const handleSplitClip = (clipId: string, splitAtMs: number) => {
-    pushHistory(project);
+    pushHistory();
     setProject((prev) => {
       const clipIndex = prev.clips.findIndex((c) => c.id === clipId);
       if (clipIndex === -1) return prev;
@@ -604,7 +645,7 @@ export default function App() {
   };
 
   const handleDeleteClip = (clipId: string) => {
-    pushHistory(project);
+    pushHistory();
     setProject((prev) => ({
       ...prev,
       clips: prev.clips.filter((c) => c.id !== clipId),
@@ -617,7 +658,7 @@ export default function App() {
   const handleDuplicateClip = (clipId: string) => {
     const original = project.clips.find((c) => c.id === clipId);
     if (!original) return;
-    pushHistory(project);
+    pushHistory();
 
     // Enforce zero overlap: find nearest non-overlapping slot on that track
     const idealStart = original.start_time_ms + original.duration_ms;
@@ -657,7 +698,7 @@ export default function App() {
 
   const handlePasteClip = (targetTrackIndex?: number, targetTimeMs?: number) => {
     if (!clipboardClip) return;
-    pushHistory(project);
+    pushHistory();
 
     const destTrack =
       targetTrackIndex !== undefined && targetTrackIndex >= 0
@@ -707,7 +748,7 @@ export default function App() {
   const handleNewProject = () => {
     if (window.confirm('Create a new project? Any unsaved changes will be cleared.')) {
       handleStop();
-      pushHistory(project);
+      pushHistory();
       setProject({
         ...INITIAL_PROJECT,
         name: 'Untitled Project',
@@ -842,7 +883,7 @@ export default function App() {
         return;
       }
       handleStop();
-      pushHistory(project);
+      pushHistory();
       setProject(parsed);
       setSelectedClipId(null);
       // A .sic carries both workspaces.
@@ -1058,7 +1099,7 @@ export default function App() {
   }, []);
 
   const handleInsertFromPool = (source: SourceAudioFile, trackIndex?: number) => {
-    pushHistory(project);
+    pushHistory();
     const targetTrack =
       trackIndex !== undefined ? trackIndex : selectedTrackIndex !== null ? selectedTrackIndex : 0;
 
@@ -1146,6 +1187,20 @@ export default function App() {
 
   const concatLayout = useMemo(() => computeLayout(concat.items), [concat.items]);
 
+  /** Build the schedule the preview player uses from the current list. */
+  const buildConcatSchedule = useCallback(() => {
+    const { starts, totalMs } = computeLayout(concat.items);
+    const scheduled = concat.items.map((item, i) => ({
+      source_path: item.source_path,
+      startMs: starts[i],
+      gain: item.gain,
+      // Mirror the exporter: a crossfade fades this item out and the next in.
+      fadeInMs: i > 0 ? Math.min(concat.items[i - 1].crossfade_ms, item.duration_ms) : 0,
+      fadeOutMs: Math.min(item.crossfade_ms, item.duration_ms),
+    }));
+    return { scheduled, totalMs };
+  }, [concat.items]);
+
   const stopConcatPlayback = useCallback(() => {
     audioEngine.stop();
     setIsConcatPlaying(false);
@@ -1159,16 +1214,7 @@ export default function App() {
     }
     if (concat.items.length === 0) return;
 
-    const { starts, totalMs } = computeLayout(concat.items);
-    const scheduled = concat.items.map((item, i) => ({
-      source_path: item.source_path,
-      startMs: starts[i],
-      gain: item.gain,
-      // Mirror the exporter: a crossfade fades this item out and the next in.
-      fadeInMs: i > 0 ? Math.min(concat.items[i - 1].crossfade_ms, item.duration_ms) : 0,
-      fadeOutMs: Math.min(item.crossfade_ms, item.duration_ms),
-    }));
-
+    const { scheduled, totalMs } = buildConcatSchedule();
     const startFrom = concatTimeMs >= totalMs ? 0 : concatTimeMs;
     audioEngine.playSequence(
       scheduled,
@@ -1178,18 +1224,27 @@ export default function App() {
       (ms) => setConcatTimeMs(ms)
     );
     setIsConcatPlaying(true);
-  }, [isConcatPlaying, concat, concatTimeMs]);
+  }, [isConcatPlaying, concat, concatTimeMs, buildConcatSchedule]);
 
   const handleConcatSeek = useCallback(
     (ms: number) => {
       const clamped = Math.max(0, Math.min(concatLayout.totalMs, ms));
       setConcatTimeMs(clamped);
+
+      // Seeking mid-playback used to stop the transport. It now restarts from
+      // the new position, so scrubbing while listening works.
       if (isConcatPlaying) {
-        audioEngine.stop();
-        setIsConcatPlaying(false);
+        const { scheduled, totalMs } = buildConcatSchedule();
+        audioEngine.playSequence(
+          scheduled,
+          clamped,
+          totalMs,
+          concat.apply_master_chain,
+          (t) => setConcatTimeMs(t)
+        );
       }
     },
-    [concatLayout.totalMs, isConcatPlaying]
+    [concatLayout.totalMs, isConcatPlaying, buildConcatSchedule, concat.apply_master_chain]
   );
 
   /** Files imported while in concat mode are appended to the list automatically
@@ -1648,7 +1703,10 @@ export default function App() {
       {mode === 'concat' ? (
         <ConcatWorkspace
           state={concat}
-          onChange={(updater) => setConcat(updater)}
+          onChange={(updater) => {
+            pushConcatHistory();
+            setConcat(updater);
+          }}
           onImportRequest={handleConcatImport}
           isImporting={isImporting}
           poolItems={concatPoolItems}

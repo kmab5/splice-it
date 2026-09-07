@@ -143,6 +143,12 @@ export interface ExportOptions {
   mp3_bitrate_kbps: number;
   /** FLAC output resolution: 16 or 24. */
   flac_bit_depth: number;
+  /** Encode MP3 as variable bitrate instead of constant. */
+  mp3_vbr: boolean;
+  /** LAME VBR quality, 0 (best) to 9 (smallest). */
+  mp3_vbr_quality: number;
+  /** FLAC encoder effort: 0 fast, 1 balanced, 2 maximum. */
+  flac_compression: number;
 }
 
 /** File extension for a format, used for the save dialog and default filename. */

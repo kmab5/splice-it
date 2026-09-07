@@ -1,4 +1,4 @@
-# Splice It
+g# Splice It
 
 A Windows audio editor for joining files together and getting the tags right.
 
@@ -38,12 +38,25 @@ and crossfades, ITU-R BS.1770 K-weighted loudness measurement.
 
 ## Installing
 
-Grab an installer from the **Actions** tab: open the latest **Build Windows
-Installers** run and download `splice-it-msi` or `splice-it-setup-exe`. A
-portable `.exe` is also published if you would rather not install.
+Download from the **Releases** page:
+
+| File | Use it if |
+|---|---|
+| `SpliceIt_<version>_x64-setup.exe` | You want the usual installer (recommended) |
+| `SpliceIt_<version>_x64.msi` | You are deploying via Group Policy or Intune |
+| `SpliceIt_<version>_portable.exe` | You would rather not install anything |
 
 Nothing else is needed on the target machine. Windows 11 and current Windows 10
 already include the WebView2 runtime.
+
+Builds from a manual workflow run (rather than a tag) appear as artifacts under
+the **Actions** tab instead.
+
+### The SmartScreen warning
+
+These builds are not code-signed, so Windows shows "Windows protected your PC"
+on first run. Choose **More info** then **Run anyway**. See
+[Code signing](#code-signing) for what it would take to remove that.
 
 ---
 
@@ -120,6 +133,149 @@ opens it.
 Auto-save is on by default at five minutes, configurable in Settings. It only
 ever overwrites a file you have already chosen — it will not invent a filename or
 interrupt you with a dialog, so it stays dormant until the first manual save.
+
+---
+
+## Releasing
+
+Tag a commit and push it. The Windows workflow builds, then publishes a GitHub
+Release with all three files attached:
+
+```bash
+npm version patch          # or edit the version by hand
+# keep src-tauri/Cargo.toml and src-tauri/tauri.conf.json in step
+git commit -am "Release v0.2.11"
+git tag v0.2.11
+git push && git push --tags
+```
+
+A manual **Run workflow** produces the same files as artifacts without creating
+a release.
+
+> All three version fields must match: `package.json`, `src-tauri/Cargo.toml`
+> and `src-tauri/tauri.conf.json`. The frontend reads its version from
+> `package.json` at build time, and the installer reads `tauri.conf.json`.
+
+---
+
+## Code signing
+
+Unsigned executables trigger Windows SmartScreen. Removing that warning needs a
+certificate from a certificate authority; there is no free or self-service
+route, because the whole point is that someone verified who you are.
+
+**What to buy.** An *OV* (Organisation Validation) code signing certificate runs
+roughly $200-400/year from Sectigo, DigiCert or SSL.com, and requires a
+registered business. An *EV* (Extended Validation) certificate costs more but
+clears SmartScreen immediately; with OV, reputation builds over time and
+downloads, so early users may still see the warning. Individual developers can
+get OV certificates from some CAs with identity documents instead of a business
+registration.
+
+Since June 2023 all new code signing certificates must be stored on hardware —
+a USB token, or a cloud HSM such as Azure Key Vault or SSL.com's eSigner. Cloud
+HSM is the only practical option for CI, since a GitHub runner cannot use a
+physical token.
+
+**Wiring it into the build.** Tauri signs during bundling when the certificate
+details are present. Add to `src-tauri/tauri.conf.json`:
+
+```json
+"bundle": {
+  "windows": {
+    "certificateThumbprint": "YOUR_CERT_THUMBPRINT",
+    "digestAlgorithm": "sha256",
+    "timestampUrl": "http://timestamp.digicert.com"
+  }
+}
+```
+
+Then in the workflow, import the certificate from repository secrets before the
+build step:
+
+```yaml
+- name: Import code signing certificate
+  shell: pwsh
+  env:
+    CERT_BASE64: ${{ secrets.WINDOWS_CERT_BASE64 }}
+    CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+  run: |
+    $bytes = [Convert]::FromBase64String($env:CERT_BASE64)
+    Set-Content -Path cert.pfx -Value $bytes -AsByteStream
+    $pw = ConvertTo-SecureString -String $env:CERT_PASSWORD -AsPlainText -Force
+    Import-PfxCertificate -FilePath cert.pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw
+    Remove-Item cert.pfx
+```
+
+Always set `timestampUrl`. Without a timestamp, signatures stop validating the
+day the certificate expires; with one, they stay valid indefinitely.
+
+For a cloud HSM the flow differs — you point Tauri at a signing command instead
+of a local thumbprint, using the provider's CLI tool.
+
+---
+
+## Auto-updates
+
+Tauri's updater checks a JSON manifest you host, compares versions, and
+downloads a signed update. It is separate from code signing and uses its own
+key pair, which you generate yourself at no cost.
+
+**1. Generate the update signing key.**
+
+```bash
+npm run tauri signer generate -- -w ~/.tauri/splice-it.key
+```
+
+Keep the private key out of the repository. Put it in repository secrets as
+`TAURI_SIGNING_PRIVATE_KEY` (plus `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if you
+set one). The public key goes in the config.
+
+**2. Add the updater to the project.**
+
+```bash
+npm install @tauri-apps/plugin-updater
+cd src-tauri && cargo add tauri-plugin-updater
+```
+
+Register it in `main.rs`, add `updater:default` to
+`src-tauri/capabilities/default.json`, and configure the endpoint:
+
+```json
+"plugins": {
+  "updater": {
+    "active": true,
+    "pubkey": "YOUR_PUBLIC_KEY",
+    "endpoints": [
+      "https://github.com/<user>/splice-it/releases/latest/download/latest.json"
+    ]
+  }
+}
+```
+
+**3. Publish the manifest.** With the signing key present as an environment
+variable, `tauri build` produces `.sig` files and a `latest.json` alongside the
+installers. Attach `latest.json` to the release — the endpoint above resolves to
+whatever the newest release contains, so no server is needed.
+
+**4. Check for updates from the app**, ideally on a Settings button rather than
+silently at launch:
+
+```ts
+import { check } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
+
+const update = await check();
+if (update) {
+  await update.downloadAndInstall();
+  await relaunch();
+}
+```
+
+Two things worth knowing. The updater installs a full replacement, not a patch,
+so each update is a fresh download of the whole app. And updates should be
+signed with the same certificate as the original install once code signing is in
+place, otherwise Windows treats the update as a different application.
 
 ---
 

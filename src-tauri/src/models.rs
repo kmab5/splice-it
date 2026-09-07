@@ -176,6 +176,15 @@ pub struct ExportOptions {
     /// FLAC output resolution, 16 or 24. Defaults to 24.
     #[serde(default)]
     pub flac_bit_depth: u32,
+    /// Encode MP3 as variable bitrate instead of constant.
+    #[serde(default)]
+    pub mp3_vbr: bool,
+    /// LAME VBR quality, 0 (best) to 9 (smallest). Equivalent to -V0..-V9.
+    #[serde(default)]
+    pub mp3_vbr_quality: u32,
+    /// FLAC encoder effort: 0 fast, 1 balanced, 2 maximum.
+    #[serde(default)]
+    pub flac_compression: u32,
 }
 
 /// Result of a completed mixdown render.

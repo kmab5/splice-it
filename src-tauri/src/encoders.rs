@@ -32,12 +32,21 @@ fn quantize(interleaved: &[f32], bits: u32, dither: bool) -> Vec<i32> {
         .collect()
 }
 
-/// Write a FLAC file. Lossless, so `bit_depth` decides the exact resolution.
+/// Write a FLAC file. Lossless, so `bit_depth` decides the exact resolution and
+/// `compression` only trades encoding time against file size.
+///
+/// `flacenc` does not expose libFLAC's 0-8 preset scale, so these three levels
+/// map onto the settings it does have rather than inventing a fake slider:
+///
+/// * 0 — fixed LPC only. Fastest, noticeably larger files.
+/// * 1 — the crate defaults.
+/// * 2 — maximum LPC order and coefficient precision. Slowest, smallest.
 pub fn write_flac(
     path: &str,
     interleaved: &[f32],
     sample_rate: u32,
     bit_depth: u32,
+    compression: u32,
     dither: bool,
 ) -> Result<(), String> {
     // BitRepr provides Stream::write; Verify provides Encoder::into_verified.
@@ -48,7 +57,20 @@ pub fn write_flac(
     // Dither only matters when discarding resolution.
     let pcm = quantize(interleaved, bits, dither && bits == 16);
 
-    let config = flacenc::config::Encoder::default()
+    let mut settings = flacenc::config::Encoder::default();
+    match compression {
+        0 => {
+            // Skipping the LPC search is where most of the encoding time goes.
+            settings.subframe_coding.use_lpc = false;
+        }
+        2 => {
+            settings.subframe_coding.qlpc.lpc_order = 24;
+            settings.subframe_coding.qlpc.quant_precision = 15;
+        }
+        _ => {}
+    }
+
+    let config = settings
         .into_verified()
         .map_err(|_| "FLAC encoder configuration was rejected".to_string())?;
 
@@ -70,14 +92,37 @@ pub fn write_flac(
     std::fs::write(path, sink.as_slice()).map_err(|e| format!("Cannot write FLAC file: {}", e))
 }
 
-/// Write an MP3 via LAME at a constant bitrate.
+/// Map a 0-9 setting onto LAME's quality enum. 0 is best.
+fn lame_quality(level: u32) -> mp3lame_encoder::Quality {
+    use mp3lame_encoder::Quality;
+    match level {
+        0 => Quality::Best,
+        1 => Quality::SecondBest,
+        2 => Quality::NearBest,
+        3 => Quality::VeryNice,
+        4 => Quality::Nice,
+        5 => Quality::Good,
+        6 => Quality::Decent,
+        7 => Quality::Ok,
+        8 => Quality::SecondWorst,
+        _ => Quality::Worst,
+    }
+}
+
+/// Write an MP3 via LAME, either at a constant bitrate or in VBR mode.
+///
+/// VBR spends bits where the material needs them, so for a given average size
+/// it generally sounds better than CBR. `vbr_quality` follows LAME's -V scale:
+/// 0 is best quality and largest, 9 is smallest.
 pub fn write_mp3(
     path: &str,
     interleaved: &[f32],
     sample_rate: u32,
     bitrate_kbps: u32,
+    vbr: bool,
+    vbr_quality: u32,
 ) -> Result<(), String> {
-    use mp3lame_encoder::{Bitrate, Builder, FlushNoGap, InterleavedPcm, Quality};
+    use mp3lame_encoder::{Bitrate, Builder, FlushNoGap, InterleavedPcm, Quality, VbrMode};
 
     // LAME only handles the MPEG sample rates, topping out at 48 kHz.
     if !matches!(sample_rate, 8000 | 11025 | 12000 | 16000 | 22050 | 24000 | 32000 | 44100 | 48000) {
@@ -99,15 +144,31 @@ pub fn write_mp3(
     builder
         .set_sample_rate(sample_rate)
         .map_err(|e| format!("MP3 sample rate setup failed: {:?}", e))?;
-    builder
-        .set_brate(match bitrate_kbps {
-            128 => Bitrate::Kbps128,
-            160 => Bitrate::Kbps160,
-            256 => Bitrate::Kbps256,
-            320 => Bitrate::Kbps320,
-            _ => Bitrate::Kbps192,
-        })
-        .map_err(|e| format!("MP3 bitrate setup failed: {:?}", e))?;
+    if vbr {
+        builder
+            .set_vbr_mode(VbrMode::Mtrh)
+            .map_err(|e| format!("MP3 VBR mode setup failed: {:?}", e))?;
+        builder
+            .set_vbr_quality(lame_quality(vbr_quality))
+            .map_err(|e| format!("MP3 VBR quality setup failed: {:?}", e))?;
+        // The Xing/LAME header carries the VBR seek table, without which
+        // players report the wrong duration and cannot seek accurately.
+        builder
+            .set_to_write_vbr_tag(true)
+            .map_err(|e| format!("MP3 VBR tag setup failed: {:?}", e))?;
+    } else {
+        builder
+            .set_brate(match bitrate_kbps {
+                128 => Bitrate::Kbps128,
+                160 => Bitrate::Kbps160,
+                256 => Bitrate::Kbps256,
+                320 => Bitrate::Kbps320,
+                _ => Bitrate::Kbps192,
+            })
+            .map_err(|e| format!("MP3 bitrate setup failed: {:?}", e))?;
+    }
+
+    // Algorithm effort, independent of the VBR quality target.
     builder
         .set_quality(Quality::Best)
         .map_err(|e| format!("MP3 quality setup failed: {:?}", e))?;

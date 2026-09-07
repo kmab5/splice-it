@@ -432,6 +432,7 @@ fn write_output_file(
             interleaved,
             sample_rate,
             if options.flac_bit_depth == 16 { 16 } else { 24 },
+            options.flac_compression,
             options.dither,
         ),
         "mp3" => crate::encoders::write_mp3(
@@ -439,6 +440,8 @@ fn write_output_file(
             interleaved,
             sample_rate,
             if options.mp3_bitrate_kbps == 0 { 192 } else { options.mp3_bitrate_kbps },
+            options.mp3_vbr,
+            options.mp3_vbr_quality,
         ),
         wav_format => write_wav_file(
             &options.export_path,
@@ -533,11 +536,17 @@ fn write_wav_file(
 fn describe_format(options: &ExportOptions) -> String {
     match options.format.as_str() {
         "flac" => format!(
-            "FLAC {}-bit",
-            if options.flac_bit_depth == 16 { 16 } else { 24 }
+            "FLAC {}-bit ({})",
+            if options.flac_bit_depth == 16 { 16 } else { 24 },
+            match options.flac_compression {
+                0 => "fast",
+                2 => "maximum",
+                _ => "balanced",
+            }
         ),
+        "mp3" if options.mp3_vbr => format!("MP3 VBR V{}", options.mp3_vbr_quality.min(9)),
         "mp3" => format!(
-            "MP3 {} kbps",
+            "MP3 {} kbps CBR",
             if options.mp3_bitrate_kbps == 0 { 192 } else { options.mp3_bitrate_kbps }
         ),
         "wav_16" => "16-bit WAV".to_string(),

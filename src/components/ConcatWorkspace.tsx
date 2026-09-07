@@ -113,6 +113,21 @@ export const ConcatWorkspace: React.FC<ConcatWorkspaceProps> = ({
   const [menu, setMenu] = useState<{ x: number; y: number; itemId: string | null } | null>(null);
 
   const dockResizeRef = useRef(false);
+  const stripDragRef = useRef(false);
+
+  /** Map a pointer position on the sequence strip to a time and seek there. */
+  const seekFromStrip = useCallback(
+    (element: HTMLElement, clientX: number) => {
+      const rect = element.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      onSeek(ratio * totalMsRef.current);
+    },
+    [onSeek]
+  );
+
+  // Kept in a ref so the seek handler does not need re-creating as the list
+  // changes, which would break an in-progress drag.
+  const totalMsRef = useRef(0);
 
   // Close the context menu on any outside click or Escape.
   useEffect(() => {
@@ -152,6 +167,7 @@ export const ConcatWorkspace: React.FC<ConcatWorkspaceProps> = ({
   );
 
   const { starts, totalMs } = useMemo(() => computeLayout(state.items), [state.items]);
+  totalMsRef.current = totalMs;
 
   const setItems = useCallback(
     (fn: (items: ConcatItem[]) => ConcatItem[]) => {
@@ -291,11 +307,20 @@ export const ConcatWorkspace: React.FC<ConcatWorkspaceProps> = ({
         {/* Sequence strip: every file drawn to scale, with gaps and crossfades */}
         <div
           className="flex-1 h-8 bg-slate-950/80 rounded border border-slate-800 relative cursor-pointer group min-w-0 overflow-hidden"
-          onClick={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            onSeek(((e.clientX - rect.left) / rect.width) * totalMs);
+          onMouseDown={(e) => {
+            stripDragRef.current = true;
+            seekFromStrip(e.currentTarget, e.clientX);
           }}
-          title="Click to scrub. Blocks are files, dark spans are gaps, hatched ends are crossfades."
+          onMouseMove={(e) => {
+            if (stripDragRef.current) seekFromStrip(e.currentTarget, e.clientX);
+          }}
+          onMouseUp={() => {
+            stripDragRef.current = false;
+          }}
+          onMouseLeave={() => {
+            stripDragRef.current = false;
+          }}
+          title="Click or drag anywhere to scrub. Double-click a file to select it. Blocks are files, amber spans are gaps, hatched ends are crossfades."
         >
           {totalMs > 0 &&
             state.items.map((item, i) => {
@@ -309,7 +334,7 @@ export const ConcatWorkspace: React.FC<ConcatWorkspaceProps> = ({
               return (
                 <div
                   key={item.id}
-                  onClick={(e) => {
+                  onDoubleClick={(e) => {
                     e.stopPropagation();
                     setSelectedId(isSel ? null : item.id);
                   }}
