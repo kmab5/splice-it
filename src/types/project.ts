@@ -226,6 +226,8 @@ export interface AppSettings {
   reopenLastProject: boolean;
   /** Most recently saved or opened project paths, newest first. */
   recentProjects: string[];
+  /** Cleared once the first-run screen has been dismissed. */
+  showWelcome: boolean;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -235,6 +237,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultSampleRate: 44100,
   reopenLastProject: true,
   recentProjects: [],
+  showWelcome: true,
 };
 
 /** How many entries the recent-projects list keeps. */

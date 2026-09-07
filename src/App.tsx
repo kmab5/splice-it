@@ -16,6 +16,7 @@ import { audioEngine } from './services/audioEngine';
 import {
   analyzeAudioFile,
   probeAudioFile,
+  takeLaunchFile,
   BROWSER_PATH_PREFIX,
   exportConcat,
   exportProject,
@@ -40,6 +41,7 @@ import { ContextMenu, ContextMenuTarget } from './components/ContextMenu';
 import { TrackColorPicker } from './components/TrackColorPicker';
 import { ConcatWorkspace, computeLayout } from './components/ConcatWorkspace';
 import { SettingsModal } from './components/SettingsModal';
+import { WelcomeModal } from './components/WelcomeModal';
 import { loadSettings, saveSettings } from './services/settings';
 import { APP_VERSION, PROJECT_FORMAT_VERSION } from './version';
 import type { WorkspaceMode } from './components/TopNavbar';
@@ -343,6 +345,13 @@ export default function App() {
   }, [isPlaying]);
 
   // Calculate total duration from clips
+  /**
+   * Empty runway kept past the last clip so the playhead can be parked anywhere,
+   * not just within existing content. The timeline used to end exactly where the
+   * audio did, which made it impossible to seek into empty space.
+   */
+  const TIMELINE_TAIL_MS = 30000;
+
   const calculateTotalDurationMs = useCallback((): number => {
     let maxMs = 0;
     project.clips.forEach((c) => {
@@ -351,6 +360,16 @@ export default function App() {
     });
     return Math.max(16000, maxMs);
   }, [project.clips]);
+
+  /**
+   * Move the playhead by a signed offset in the active workspace.
+   * Step sizes: 5s plain, 15s with Ctrl/Cmd, 30s with Alt.
+   */
+  const seekStepForEvent = (e: { ctrlKey: boolean; metaKey: boolean; altKey: boolean }): number => {
+    if (e.altKey) return 30000;
+    if (e.ctrlKey || e.metaKey) return 15000;
+    return 5000;
+  };
 
   // Play / Pause Toggle
   const handlePlayPause = useCallback(() => {
@@ -1218,22 +1237,36 @@ export default function App() {
     []
   );
 
-  // Reopen the most recent project on launch, when enabled. A missing file is
-  // dropped from the list rather than reported: it usually means the project
-  // was moved or deleted between sessions.
+  // Startup project resolution, in priority order:
+  //   1. A .sic passed on the command line (double-clicking a project file).
+  //   2. The most recent project, when "reopen last" is on.
+  // A missing file is dropped from the recent list rather than reported: it
+  // usually just means the project was moved between sessions.
   const hasAttemptedReopenRef = useRef(false);
   useEffect(() => {
     if (hasAttemptedReopenRef.current) return;
     hasAttemptedReopenRef.current = true;
-
-    if (!isTauri() || !settings.reopenLastProject) return;
-    const mostRecent = settings.recentProjects[0];
-    if (!mostRecent) return;
+    if (!isTauri()) return;
 
     void (async () => {
+      const launched = await takeLaunchFile();
+      if (launched) {
+        try {
+          applyLoadedProject(JSON.parse(await readTextFile(launched)) as ProjectState);
+          setSavedPath(launched);
+          rememberRecentProject(launched);
+          return;
+        } catch {
+          window.alert(`Could not open ${launched}.`);
+        }
+      }
+
+      if (!settings.reopenLastProject) return;
+      const mostRecent = settings.recentProjects[0];
+      if (!mostRecent) return;
+
       try {
-        const text = await readTextFile(mostRecent);
-        applyLoadedProject(JSON.parse(text) as ProjectState);
+        applyLoadedProject(JSON.parse(await readTextFile(mostRecent)) as ProjectState);
         setSavedPath(mostRecent);
       } catch {
         updateSettings({
@@ -1274,6 +1307,55 @@ export default function App() {
 
     return () => clearInterval(timer);
   }, [settings.autoSaveEnabled, settings.autoSaveMinutes]);
+
+  // ---------------------------------------------------------------------------
+  // Quit guard
+  // ---------------------------------------------------------------------------
+
+  // Tauri closes the native window without consulting the page, so beforeunload
+  // is not enough. This intercepts the request, offers to save, and only then
+  // destroys the window.
+  useEffect(() => {
+    if (!isTauri() || !settings.confirmOnDiscard) return;
+
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const appWindow = getCurrentWindow();
+
+        const un = await appWindow.onCloseRequested(async (event) => {
+          if (!autoSaveRef.current.dirty) return;
+
+          event.preventDefault();
+          const shouldSave = window.confirm(
+            'This project has unsaved changes.\n\nSave before closing?'
+          );
+
+          if (shouldSave) {
+            const saved = await autoSaveRef.current.save();
+            // A cancelled save dialog means the person changed their mind.
+            if (!saved) return;
+          }
+
+          await appWindow.destroy();
+        });
+
+        if (cancelled) un();
+        else unlisten = un;
+      } catch (err) {
+        console.warn('Close guard unavailable:', err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [settings.confirmOnDiscard]);
+
 
   /**
    * Native OS drag-and-drop. Tauri intercepts file drops before the webview
@@ -1412,6 +1494,22 @@ export default function App() {
         return;
       }
 
+      // Arrow keys scrub the active workspace. Ctrl/Cmd widens the step to 15s,
+      // Alt to 30s.
+      if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
+        e.preventDefault();
+        const direction = e.code === 'ArrowRight' ? 1 : -1;
+        const delta = direction * seekStepForEvent(e);
+
+        if (mode === 'concat') {
+          handleConcatSeek(concatTimeMs + delta);
+        } else {
+          const limit = calculateTotalDurationMs() + TIMELINE_TAIL_MS;
+          handleSeek(Math.max(0, Math.min(limit, currentTimeMs + delta)));
+        }
+        return;
+      }
+
       // Everything below is timeline-only.
       if (mode !== 'timeline') return;
 
@@ -1436,6 +1534,10 @@ export default function App() {
     mode,
     handlePlayPause,
     handleConcatPlayPause,
+    handleSeek,
+    handleConcatSeek,
+    concatTimeMs,
+    calculateTotalDurationMs,
     handleUndo,
     handleRedo,
     handleSaveProject,
@@ -1495,6 +1597,7 @@ export default function App() {
   }, [project.audio_pool]);
 
   const totalDurationMs = calculateTotalDurationMs();
+  const timelineExtentMs = totalDurationMs + TIMELINE_TAIL_MS;
 
   // The canvases are viewport-sized and virtualized, so the timeline extent is
   // just a scroll range now. Zoom is no longer capped by canvas limits.
@@ -1505,7 +1608,7 @@ export default function App() {
     []
   );
 
-  const timelineWidth = Math.max(1800, (totalDurationMs / 1000) * zoom * 1.25);
+  const timelineWidth = Math.max(1800, (timelineExtentMs / 1000) * zoom);
   const selectedClip = project.clips.find((c) => c.id === selectedClipId) || null;
 
   return (
@@ -1528,6 +1631,11 @@ export default function App() {
         onStop={handleStop}
         onGoToStart={handleGoToStart}
         onGoToEnd={handleGoToEnd}
+        onSeekRelative={(direction, modifiers) => {
+          const step = seekStepForEvent({ ...modifiers, metaKey: false });
+          const limit = calculateTotalDurationMs() + TIMELINE_TAIL_MS;
+          handleSeek(Math.max(0, Math.min(limit, currentTimeMs + direction * step)));
+        }}
         onBpmChange={(bpm) => setProject((prev) => ({ ...prev, bpm }))}
         canUndo={history.past.length > 0}
         canRedo={history.future.length > 0}
@@ -1890,6 +1998,16 @@ export default function App() {
           }
         />
       )}
+
+      {/* First run */}
+      <WelcomeModal
+        isOpen={settings.showWelcome}
+        onChoose={(chosen) => {
+          handleModeChange(chosen);
+          updateSettings({ showWelcome: false });
+        }}
+        onDismiss={() => updateSettings({ showWelcome: false })}
+      />
 
       {/* Settings */}
       <SettingsModal

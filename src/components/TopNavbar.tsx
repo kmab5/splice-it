@@ -8,6 +8,8 @@ import {
   Undo2,
   Redo2,
   PanelRight,
+  Rewind,
+  FastForward,
   LayoutGrid,
   ListOrdered,
   Settings as SettingsIcon,
@@ -31,6 +33,8 @@ interface TopNavbarProps {
   onStop: () => void;
   onGoToStart: () => void;
   onGoToEnd: () => void;
+  /** Move the playhead by a signed millisecond offset. */
+  onSeekRelative?: (deltaMs: number, modifiers: { ctrlKey: boolean; altKey: boolean }) => void;
   onBpmChange: (bpm: number) => void;
   canUndo: boolean;
   canRedo: boolean;
@@ -54,6 +58,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   onStop,
   onGoToStart,
   onGoToEnd,
+  onSeekRelative,
   onBpmChange,
   canUndo,
   canRedo,
@@ -212,6 +217,14 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
 
         {/* Play / Pause Primary Button */}
         <button
+          onClick={(e) => onSeekRelative?.(-1, { ctrlKey: e.ctrlKey || e.metaKey, altKey: e.altKey })}
+          title="Back 5s — hold Ctrl for 15s, Alt for 30s (or use the left arrow key)"
+          className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition"
+        >
+          <Rewind className="w-4 h-4" />
+        </button>
+
+        <button
           id="btn-play-pause"
           onClick={onPlayPause}
           title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
@@ -225,6 +238,14 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
         </button>
 
         {/* Go to End Button */}
+        <button
+          onClick={(e) => onSeekRelative?.(1, { ctrlKey: e.ctrlKey || e.metaKey, altKey: e.altKey })}
+          title="Forward 5s — hold Ctrl for 15s, Alt for 30s (or use the right arrow key)"
+          className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition"
+        >
+          <FastForward className="w-4 h-4" />
+        </button>
+
         <button
           id="btn-go-to-end"
           onClick={onGoToEnd}

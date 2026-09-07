@@ -164,6 +164,19 @@ export async function saveAudioMetadata(path: string, metadata: MetadataDto): Pr
 // Project files
 // ---------------------------------------------------------------------------
 
+/**
+ * A project path the app was launched with, from double-clicking a .sic file.
+ * Returns null in the browser or when the app was started normally.
+ */
+export async function takeLaunchFile(): Promise<string | null> {
+  if (!isTauri()) return null;
+  try {
+    return await invokeCmd<string | null>('take_launch_file');
+  } catch {
+    return null;
+  }
+}
+
 export async function readTextFile(path: string): Promise<string> {
   return invokeCmd<string>('read_text_file', { path });
 }

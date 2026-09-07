@@ -801,6 +801,13 @@ pub async fn read_audio_file_bytes(path: String) -> Result<tauri::ipc::Response,
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+/// Return the project path the app was launched with, if any, and clear it so a
+/// later call does not reopen the same file.
+#[tauri::command]
+pub fn take_launch_file(state: tauri::State<'_, crate::LaunchFile>) -> Option<String> {
+    state.0.lock().ok().and_then(|mut guard| guard.take())
+}
+
 #[tauri::command]
 pub fn read_text_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("Cannot read '{}': {}", path, e))
