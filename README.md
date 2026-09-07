@@ -1,4 +1,4 @@
-g# Splice It
+# Splice It
 
 A Windows audio editor for joining files together and getting the tags right.
 
