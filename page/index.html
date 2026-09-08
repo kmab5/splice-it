@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>splice it — join audio files, fix the tags</title>
+<meta name="description" content="a windows audio editor for joining files together and getting the tags right. two workspaces, one project file, no subscription.">
+
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="assets/app-icon.png">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="splice it — join audio files, fix the tags">
+<meta property="og:description" content="a windows audio editor for joining files together and getting the tags right.">
+<meta property="og:image" content="assets/og.png">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<a class="skip" href="#main">skip to content</a>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top">
+      <img src="assets/app-icon.png" alt="" width="28" height="28" class="brand-icon">
+      <span class="brand-name">splice it</span>
+      <span class="chip chip-dim" id="version-chip" data-fallback="v0.2.12">v0.2.12</span>
+    </a>
+    <nav class="nav-links">
+      <a href="#modes">modes</a>
+      <a href="#formats">formats</a>
+      <a href="#install">install</a>
+      <a href="https://github.com/kmab5/splice-it" rel="noopener">source</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ───────────────────────── hero ───────────────────────── -->
+<section class="hero" id="top">
+  <div class="wrap hero-inner">
+    <div class="hero-copy">
+      <p class="eyebrow">windows · tauri + rust · free</p>
+      <h1>join audio files.<br>fix the tags. done.</h1>
+      <p class="lede">
+        most audio editors make you build a session before you can glue two files
+        together. this one has a mode that just does the gluing; the full
+        multitrack editor is still there when you actually need it.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/kmab5/splice-it/releases/latest" id="download-btn" rel="noopener">
+          download for windows
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/kmab5/splice-it" rel="noopener">
+          read the source
+        </a>
+      </div>
+      <p class="fineprint">
+        no installer signing yet, so windows will grumble on first run
+        (<a href="#smartscreen">how to get past it</a>). nothing phones home.
+      </p>
+    </div>
+
+    <!-- a real screenshot would be better; this is the concat strip, drawn honestly -->
+    <figure class="hero-viz" aria-labelledby="viz-cap">
+      <div class="viz-shell">
+        <div class="viz-bar">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="viz-title">concat</span>
+          <span class="chip chip-purple">3 files · 4:12</span>
+        </div>
+        <div class="viz-body">
+          <div class="strip" role="img" aria-label="three audio files laid end to end with one crossfade and one gap">
+            <div class="blk blk-a" style="left:0%;width:31%"><span>intro.wav</span></div>
+            <div class="xf" style="left:27%;width:4%"></div>
+            <div class="blk blk-b" style="left:31%;width:42%"><span>main-take.flac</span></div>
+            <div class="gap" style="left:73%;width:5%"></div>
+            <div class="blk blk-c" style="left:78%;width:22%"><span>outro.mp3</span></div>
+            <div class="playhead"></div>
+          </div>
+          <ul class="viz-legend">
+            <li><i class="sw sw-a"></i>file</li>
+            <li><i class="sw sw-x"></i>crossfade</li>
+            <li><i class="sw sw-g"></i>gap</li>
+          </ul>
+          <div class="viz-rows">
+            <div class="row"><span class="mono num">1</span><span class="nm">intro.wav</span><span class="mono t">0:00.0</span></div>
+            <div class="row"><span class="mono num">2</span><span class="nm">main-take.flac</span><span class="mono t">0:47.5</span></div>
+            <div class="row"><span class="mono num">3</span><span class="nm">outro.mp3</span><span class="mono t">3:16.2</span></div>
+          </div>
+        </div>
+      </div>
+      <figcaption id="viz-cap" class="mono">
+        the sequence strip: blocks are files, hatched purple is a crossfade, amber is silence.
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ───────────────────────── modes ───────────────────────── -->
+<section class="section" id="modes">
+  <div class="wrap">
+    <p class="eyebrow">two workspaces</p>
+    <h2>pick the one that matches the job</h2>
+    <p class="section-lede">
+      they share one project file, so switching costs nothing and neither one
+      disturbs the other.
+    </p>
+
+    <div class="cards">
+      <article class="card card-purple">
+        <header>
+          <span class="chip chip-purple">the point of the app</span>
+          <h3>concat</h3>
+        </header>
+        <p>
+          drop files in, drag them into order, export one file. sort by name
+          numerically (so <code class="mono">track2</code> lands before
+          <code class="mono">track10</code>, which is more than some paid tools
+          manage), or shuffle the whole list if you're building a mix.
+        </p>
+        <ul class="ticks">
+          <li>gap or crossfade at any join; the total length updates as you change it</li>
+          <li>loudness matching that levels each file toward the median of the set, not the loudest one</li>
+          <li>preview a single file, or the whole joined sequence</li>
+          <li>with the mastering chain off, files are joined exactly as they are. no quiet re-mastering.</li>
+        </ul>
+      </article>
+
+      <article class="card card-green">
+        <header>
+          <span class="chip chip-green">when you need control</span>
+          <h3>timeline</h3>
+        </header>
+        <p>
+          multitrack editing for when files have to overlap or a single clip
+          needs its own treatment. clips on tracks, trim, split, fades, volume,
+          pan.
+        </p>
+        <ul class="ticks">
+          <li>parametric eq with draggable nodes, plus compression and a true-peak limiter</li>
+          <li>an a/b button that routes playback around the chain, so you can hear what it's doing</li>
+          <li>waveforms sharpen as you zoom; the canvas only ever draws the visible window</li>
+          <li>snapping to bars, beats and clip edges, which you can switch off</li>
+        </ul>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── metadata ───────────────────────── -->
+<section class="section section-alt" id="metadata">
+  <div class="wrap split">
+    <div>
+      <p class="eyebrow">tags</p>
+      <h2>the part everything else gets wrong</h2>
+      <p class="section-lede">
+        exporting a joined file and then hunting for a separate tag editor is a
+        silly way to spend an evening. it's built in, and it writes to every
+        format.
+      </p>
+      <ul class="ticks">
+        <li>title, artist, album, year, track and disc numbers, genre, comment, composer</li>
+        <li>isrc, bpm, initial key, lyrics, copyright, publisher, encoder</li>
+        <li>embedded cover art, dragged in or pasted</li>
+        <li>tags are read <em>out</em> of imported files too, so you can start from what's already there</li>
+      </ul>
+      <p class="note">
+        vorbis comments for flac, id3v2 for mp3 and wav. you can also edit tags
+        from inside the export dialog, which is where you usually remember you
+        forgot.
+      </p>
+    </div>
+
+    <div class="tagcard">
+      <div class="tagcard-head mono">metadata</div>
+      <dl>
+        <div><dt>title</dt><dd>night drive (full mix)</dd></div>
+        <div><dt>artist</dt><dd>kmab</dd></div>
+        <div><dt>album</dt><dd>tape three</dd></div>
+        <div><dt>year</dt><dd class="mono">2026</dd></div>
+        <div><dt>track</dt><dd class="mono">1 / 9</dd></div>
+        <div><dt>isrc</dt><dd class="mono">us-xxx-26-00001</dd></div>
+        <div><dt>cover</dt><dd><span class="chip chip-green">embedded</span></dd></div>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── formats ───────────────────────── -->
+<section class="section" id="formats">
+  <div class="wrap">
+    <p class="eyebrow">in and out</p>
+    <h2>formats</h2>
+    <p class="section-lede">
+      decoding, mixing and encoding all happen in rust. nothing is shelled out
+      to ffmpeg, so there's no second binary to install.
+    </p>
+
+    <div class="fmt-grid">
+      <div class="fmt">
+        <h4 class="mono">import</h4>
+        <p class="mono fmt-list">wav · mp3 · flac · ogg · aac · m4a · aiff</p>
+        <p>native picker, or drag files anywhere onto the window. they appear straight away and the waveforms fill in behind you.</p>
+      </div>
+      <div class="fmt">
+        <h4 class="mono">export</h4>
+        <table class="tbl">
+          <tbody>
+            <tr><td class="mono">wav</td><td>16-bit, 24-bit, 32-bit float</td></tr>
+            <tr><td class="mono">flac</td><td>16 or 24-bit; fast / balanced / maximum</td></tr>
+            <tr><td class="mono">mp3</td><td>cbr 128–320, or vbr v0–v9</td></tr>
+          </tbody>
+        </table>
+        <p>tpdf dither where it applies, and it's disabled where it doesn't rather than left on as decoration.</p>
+      </div>
+    </div>
+
+    <details class="deets">
+      <summary>what happens to the audio, precisely</summary>
+      <div class="deets-body">
+        <ul class="ticks">
+          <li>sources are decoded once and cached by path, so ten clips on one file cost one decode</li>
+          <li>resampling is a windowed-sinc filter (32 taps, 4096 phases), measured at &minus;89 dBFS reconstruction error; a 20 khz tone downsampled to 22.05 khz comes back 82 dB down instead of folding into the audible band the way linear interpolation does</li>
+          <li>crossfades and panning are equal-power, so a centred track stays at the level you set</li>
+          <li>loudness is measured with itu-r bs.1770 k-weighting</li>
+          <li>join two files with unity gain, no crossfade and the chain off, and the output is your audio placed back to back. that's the whole promise.</li>
+        </ul>
+      </div>
+    </details>
+  </div>
+</section>
+
+<!-- ───────────────────────── install ───────────────────────── -->
+<section class="section section-alt" id="install">
+  <div class="wrap">
+    <p class="eyebrow">install</p>
+    <h2>three ways in</h2>
+
+    <div class="dl-grid" id="dl-grid">
+      <a class="dl dl-primary" href="https://github.com/kmab5/splice-it/releases/latest" data-asset="setup" rel="noopener">
+        <span class="chip chip-purple">recommended</span>
+        <h3>installer</h3>
+        <p class="mono dl-file">SpliceIt_x64-setup.exe</p>
+        <p>the normal one. adds a start menu entry and associates <code class="mono">.sic</code> project files.</p>
+      </a>
+      <a class="dl" href="https://github.com/kmab5/splice-it/releases/latest" data-asset="msi" rel="noopener">
+        <span class="chip chip-dim">deployment</span>
+        <h3>msi</h3>
+        <p class="mono dl-file">SpliceIt_x64.msi</p>
+        <p>for group policy or intune, if you're pushing this to a room full of machines.</p>
+      </a>
+      <a class="dl" href="https://github.com/kmab5/splice-it/releases/latest" data-asset="portable" rel="noopener">
+        <span class="chip chip-amber">no install</span>
+        <h3>portable</h3>
+        <p class="mono dl-file">SpliceIt_portable.exe</p>
+        <p>single executable. put it on a stick; it won't write to program files.</p>
+      </a>
+    </div>
+
+    <p class="note">
+      windows 11 and current windows 10 already ship the webview2 runtime, so
+      there's nothing else to fetch. x64 only for now.
+    </p>
+
+    <div class="callout" id="smartscreen">
+      <h3 class="mono">about that warning</h3>
+      <p>
+        these builds aren't code-signed, so windows shows
+        <em>"windows protected your pc"</em> the first time you run one. click
+        <strong>more info</strong>, then <strong>run anyway</strong>.
+      </p>
+      <p>
+        the honest reason is that a signing certificate costs a few hundred
+        pounds a year and has to live on a hardware token, which is a lot of
+        ceremony for a tool that joins wav files. it's on the list; it isn't
+        done.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── shortcuts ───────────────────────── -->
+<section class="section" id="shortcuts">
+  <div class="wrap">
+    <p class="eyebrow">keys</p>
+    <h2>worth learning four of these</h2>
+    <div class="keys">
+      <div class="key"><kbd>space</kbd><span>play or pause whichever view you're looking at</span></div>
+      <div class="key"><kbd>←</kbd><kbd>→</kbd><span>scrub 5s; <kbd class="sm">ctrl</kbd> for 15s, <kbd class="sm">alt</kbd> for 30s</span></div>
+      <div class="key"><kbd>ctrl</kbd><kbd>s</kbd><span>save, straight to the current file after the first time</span></div>
+      <div class="key"><kbd>s</kbd><span>split the selected clip at the playhead</span></div>
+      <div class="key"><kbd>ctrl</kbd><kbd>z</kbd><span>undo, across both workspaces</span></div>
+      <div class="key"><kbd>right-click</kbd><span>context menu, in either workspace</span></div>
+    </div>
+    <p class="note">
+      auto-save runs every five minutes, but only over a file you've already
+      chosen. it will never invent a filename or interrupt you with a dialog.
+    </p>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div class="footer-brand">
+      <span class="lam" aria-hidden="true">
+        <img src="assets/lambda.svg" alt="" width="20" height="20">
+      </span>
+      <div>
+        <p class="mono footer-by">built by <a href="https://github.com/kmab5" rel="noopener">kmab</a></p>
+        <p class="footer-note">
+          it started because i had forty voice memos and no patience.
+        </p>
+      </div>
+    </div>
+    <nav class="footer-links">
+      <a href="https://github.com/kmab5/splice-it" rel="noopener">repository</a>
+      <a href="https://github.com/kmab5/splice-it/releases" rel="noopener">releases</a>
+      <a href="https://github.com/kmab5/splice-it/issues" rel="noopener">issues</a>
+      <a href="https://github.com/kmab5/splice-it#readme" rel="noopener">readme</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>

@@ -1,176 +1,131 @@
 # Splice It — Change Log
 
-## Turn 11 — v0.2.11 — Concat seeking, concat undo, VBR/FLAC options, releases
+## Turn 12 — v0.2.12 — Landing page
 
-Versions bumped to **0.2.11** across `package.json`, `src-tauri/Cargo.toml` and
-`src-tauri/tauri.conf.json`.
+Versions bumped to **0.2.12** across `package.json`, `src-tauri/Cargo.toml` and
+`src-tauri/tauri.conf.json`. No app source changed this turn, so `cargo check`
+and `tsc` are unaffected.
 
 ---
 
-### 1. The concat timeline is now seekable
+### One thing you should know up front
 
-The sequence strip did have a click-to-seek handler, but every file block drawn
-on top of it called `stopPropagation` to handle selection — and the blocks cover
-almost the whole strip. So clicks only reached the seek handler in the gaps
-between files, which is why it felt dead.
+GitHub Pages' **branch-based** publishing only offers two source folders: the
+repository root, or `/docs`. There is no way to point it at `page/` from the
+Settings UI.
 
-Fixed properly:
+So the page publishes through the **Pages Actions pipeline** instead, which
+accepts any directory as its artifact. `page/` stays where you asked for it.
 
-- **Click or drag anywhere** on the strip to scrub, blocks included.
-- **Double-click** a block to select that file, which is what the block click
-  used to do.
-- **Seeking during playback keeps playing.** It used to stop the transport and
-  clear the play state, so you could not scrub while listening. It now restarts
-  the sequence from the new position.
-- Arrow-key seeking already worked in concat mode from last turn, and now lines
-  up with the strip: `←`/`→` 5s, `Ctrl` 15s, `Alt` 30s.
+One-time setup: **Settings → Pages → Build and deployment → Source →
+GitHub Actions**. After that, any push touching `page/` deploys, and you can
+also run **Deploy Landing Page** by hand from the Actions tab.
 
-### 2. Undo and redo for concat
+---
 
-History held only `ProjectState`, so nothing done in concat mode was visible to
-undo. An entry is now a snapshot of **both** workspaces, so undo works across a
-mode switch and cannot leave the two out of step with each other.
+### What's in `page/`
 
-Two details worth noting:
+Plain HTML, one stylesheet, one small script. No build step and no dependencies,
+so it cannot rot while you are busy with the app.
 
-- Concat edits stream in continuously while a slider is dragged. Pushing on each
-  one would bury the stack in near-identical entries, so rapid successive
-  changes fold into the first one (600 ms window).
-- Undo stops both transports before restoring, since the restored state may not
-  contain whatever was playing.
+| File | What it is |
+| --- | --- |
+| `index.html` | The page. |
+| `styles.css` | Brand tokens copied verbatim from `kmab-brand/design-tokens.css`, then layout. |
+| `script.js` | Fills in the version and download links from the releases API. |
+| `assets/og.png` | 1200×630 social card. |
+| `assets/favicon.svg` | Three joined blocks in the tier colours. |
+| `assets/og.png`, `app-icon.png`, `lambda.svg` | Card, app icon, author mark. |
+| `README.md` | How to enable Pages and run it locally. |
 
-The depth also went from 25 entries to 50.
+### Reading the brand across
 
-### 3. VBR MP3 and FLAC compression
+The two repos use different palettes — the app is slate and emerald, the brand
+is ink and purple. Rather than picking one, the tier semantics resolved it. The
+brand assigns meaning to colour (purple is signature work, green is solid, amber
+is the side quest), and that maps onto the app almost exactly:
 
-Both are real knobs, checked against the crate sources rather than assumed.
+- **purple → concat.** The reason the app exists, so it gets the signature
+  colour and the primary buttons.
+- **green → timeline.** The solid workhorse, and near-identical to the emerald
+  the app already uses for it.
+- **amber → gaps and the SmartScreen warning.** The app already draws silence
+  in amber, so this was free.
 
-**MP3** now offers CBR or VBR. VBR uses LAME's MTRH mode with a V0-V9 quality
-slider, and writes the Xing/LAME header — without which players report the wrong
-duration and cannot seek accurately in a VBR file. The UI notes that V2 is the
-usual near-transparent choice.
+Typography follows the brand: Space Grotesk for display, Space Mono for
+eyebrows, chips, timings and filenames — anything meant to read like telemetry.
+Everything sits on `#0E0E11` with the surface and line tokens, plus a faint
+timeline grid behind the hero that fades out downward.
 
-**FLAC** gets Fast / Balanced / Maximum. `flacenc` does not expose libFLAC's 0-8
-preset scale, so rather than fake a slider these map onto settings it does have:
+### The hero visual
 
-- **Fast** — fixed LPC only (`use_lpc = false`), which is where most of the
-  encoding time goes. Larger files.
-- **Balanced** — the crate defaults.
-- **Maximum** — LPC order 24 and coefficient precision 15, both the maximum the
-  encoder verifies.
+Rather than a mocked-up screenshot, the hero draws the **actual concat sequence
+strip** in CSS: blocks per file, hatched purple where a crossfade overlaps,
+hatched amber where there is silence, and a playhead sweeping across. Same
+shapes and colours the app renders, so it is a real depiction rather than
+marketing art. It respects `prefers-reduced-motion` (playhead parks instead of
+sweeping).
 
-Lossless either way; this only trades encoding time against size. The export
-result message reports what was used, e.g. "FLAC 24-bit (maximum)" or
-"MP3 VBR V2".
+### The social card
 
-### 4. Tagged releases (moved up from step 9)
+Generated with PIL using the real Space Grotesk and Space Mono files pulled from
+the `google/fonts` repository, so the card matches the page rather than falling
+back to whatever the container had installed. Two passes: the first had the
+crossfade hatching spilling past its block and a visibly circular edge on the
+purple bloom, so the hatch is now masked to the overlap region and the bloom is
+Gaussian-blurred.
 
-The workflow now publishes a GitHub Release when you push a `v*` tag, with all
-three files attached and named by version:
+### The version number cannot go stale
 
-- `SpliceIt_<version>_x64-setup.exe` — NSIS installer
-- `SpliceIt_<version>_x64.msi` — MSI, for Group Policy or Intune
-- `SpliceIt_<version>_portable.exe` — standalone, no installer
+`script.js` fetches the latest release and rewrites the header chip, the hero
+button, and all three download cards to point at the actual asset URLs with
+their file sizes. A hardcoded `v0.2.12` sits in the HTML purely as the fallback
+for a failed request or a repo with no releases yet. This pairs with the release
+workflow from last turn: tag, push, and the page updates itself.
 
-A manual **Run workflow** still just produces artifacts without creating a
-release. Release notes are generated automatically and include a download table
-and the SmartScreen note.
+### Copy
 
-```bash
-git tag v0.2.11
-git push --tags
+Written to the brand's writing rules rather than generic product-page prose:
+lowercase headings throughout, punctuation actually used, deliberately uneven
+list items, and no closing call to action — the footer ends on
+"it started because i had forty voice memos and no patience" instead.
+
+Checked mechanically before shipping:
+
+```
+vocabulary tells:      none
+dead openers / CTA:    none
+words: 915, em dashes: 1  (brand budget allows 4)
+semicolons: 9, parentheticals: 4
+headings with capitals: 0
+HTML: balanced   CSS braces: 161/161   all asset paths resolve
 ```
 
----
-
-### On "per-clip gain automation"
-
-Fair question — it was jargon. Right now a clip has one fixed gain plus a fade
-in and a fade out. Automation would let you draw a **volume curve across the
-clip**: click to add points on a line over the waveform and drag them, so the
-level can dip under a voiceover halfway through, swell for a chorus, and so on,
-rather than being one value for the whole clip.
-
-It is a timeline feature and a fairly large one — it needs an editable envelope
-in the canvas, in the playback engine, and in the Rust exporter. **It is not
-something concat mode needs**, and if your main use is joining files you can
-happily skip it. I have parked it as optional rather than planned; say the word
-if you want it.
+The SmartScreen section states the real reason plainly (a certificate costs a
+few hundred a year and has to live on a hardware token) rather than glossing
+over it, which is also what the brand's note about inflated certainty asks for.
 
 ---
 
-### Code signing, in short
+### Worth checking
 
-The full write-up with copy-pasteable config is now in the README. The summary:
-
-- You need an **OV code signing certificate** from a CA (Sectigo, DigiCert,
-  SSL.com), roughly $200-400/year. There is no free route — the point is that
-  someone verified your identity.
-- **EV certificates** clear SmartScreen immediately. With OV, reputation builds
-  over downloads and time, so early users may still see the warning.
-- Since June 2023 all new certificates must live on **hardware** — a USB token,
-  or a cloud HSM. Cloud HSM is the only workable option for CI, since a GitHub
-  runner cannot plug in a USB token.
-- Tauri signs during bundling once `certificateThumbprint` is set in
-  `tauri.conf.json`, with the certificate imported from repository secrets.
-- **Always set `timestampUrl`.** Without a timestamp, every signature stops
-  validating the day the certificate expires. With one, they stay valid forever.
-
-### Auto-updates, in short
-
-Also written up fully in the README:
-
-- Tauri's updater is separate from code signing and uses **its own key pair**,
-  which you generate yourself for free with `tauri signer generate`.
-- Add `tauri-plugin-updater`, put the public key in `tauri.conf.json`, and point
-  the endpoint at
-  `https://github.com/<user>/splice-it/releases/latest/download/latest.json`.
-  That URL always resolves to the newest release, so **no server is needed** —
-  which fits the release workflow that now exists.
-- Building with the signing key in the environment produces `.sig` files and
-  `latest.json` next to the installers; attach them to the release.
-- Two gotchas: updates are **full downloads**, not patches. And once code
-  signing is in place, updates must use the **same certificate** as the original
-  install or Windows treats them as a different application.
+- Enable Pages with the **GitHub Actions** source, then push. The first deploy
+  usually takes under a minute.
+- Serve it locally with `python3 -m http.server 8080 --directory page`. The
+  release lookup needs an `http://` origin, so opening the file directly leaves
+  the fallback version showing.
+- Paste the deployed URL into a Discord or Slack message to check the social
+  card renders.
+- If you host it anywhere other than `kmab5/splice-it`, change `REPO` at the
+  top of `script.js`.
 
 ---
 
-### Files changed
+### Still open
 
-`README.md`, `.github/workflows/build-windows.yml`, `package.json`,
-`src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`,
-`src-tauri/src/encoders.rs`, `src-tauri/src/commands.rs`,
-`src-tauri/src/models.rs`, `src/App.tsx`,
-`src/components/ConcatWorkspace.tsx`, `src/components/ExportModal.tsx`,
-`src/types/project.ts`.
-
-`tsc --noEmit` passes and `vite build` succeeds.
-
-**One thing I should own.** While refactoring the undo history I sliced out a
-block of state declarations by accident — the edit removed everything between
-two markers, and the concat state happened to sit between them. It was caught
-immediately by the type-checker, and I restored `App.tsx` from the v0.2.10
-package and redid the change with targeted replacements instead. Nothing else
-from this turn was affected, since the other work was in different files. Worth
-mentioning so you know the file was rebuilt rather than patched in place.
-
----
-
-### Worth testing
-
-- Drag across the concat strip while it is playing — the playhead should follow
-  and audio should continue from the new spot.
-- Reorder concat items, change a gap, then Ctrl+Z a few times.
-- Export the same material as MP3 CBR 320 and VBR V2 and compare size and
-  quality.
-- Export FLAC at Fast and at Maximum and compare file size and encode time.
-- Push a tag and confirm the release appears with all three files.
-
----
-
-## Remaining plan
-
-### Optional
-- Per-clip gain automation (see above) — only if you want it.
-- Code signing, once a certificate is in hand.
-- Auto-update feed, which the release workflow now makes straightforward.
+- No screenshots. The hero strip is honest but a real capture of both
+  workspaces would sell it better than any illustration; I cannot take one
+  without running the app.
+- The page assumes x64 Windows only, which matches what the workflow builds.
+- Code signing and the auto-update feed remain undone; both are documented in
+  the README when you want them.

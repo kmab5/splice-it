@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="splice it">
+  <rect width="128" height="128" rx="30" fill="#0E0E11"/>
+  <!-- three joined blocks with a splice point, in the brand tiers -->
+  <rect x="22" y="46" width="24" height="36" rx="4" fill="#3DE08A"/>
+  <rect x="52" y="34" width="24" height="60" rx="4" fill="#B24BFF"/>
+  <rect x="82" y="52" width="24" height="24" rx="4" fill="#F5C451"/>
+  <rect x="46" y="24" width="3" height="80" rx="1.5" fill="#EDEBE4" opacity="0.55"/>
+  <rect x="79" y="24" width="3" height="80" rx="1.5" fill="#EDEBE4" opacity="0.55"/>
+</svg>
