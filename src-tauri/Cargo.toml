@@ -1,9 +1,10 @@
 [package]
 name = "splice-it"
-version = "0.2.12"
+version = "0.2.13"
 description = "Splice It - Modern High-Performance Desktop Audio Workspace"
 authors = ["Splice It Team"]
 edition = "2021"
+build = "build.rs"
 
 [build-dependencies]
 tauri-build = { version = "2.0.0", features = [] }

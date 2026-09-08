@@ -22,6 +22,65 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Fails fast with a readable message when a required file is missing.
+      # A missing src-tauri/build.rs otherwise surfaces 500 crates later as
+      # "OUT_DIR env var is not set", which points nowhere useful.
+      - name: Verify project structure
+        shell: pwsh
+        run: |
+          $required = @(
+            'package.json',
+            'index.html',
+            'src/main.tsx',
+            'src/App.tsx',
+            'src-tauri/Cargo.toml',
+            'src-tauri/build.rs',
+            'src-tauri/tauri.conf.json',
+            'src-tauri/capabilities/default.json',
+            'src-tauri/icons/icon.ico',
+            'src-tauri/src/main.rs',
+            'src-tauri/src/commands.rs',
+            'src-tauri/src/dsp.rs',
+            'src-tauri/src/encoders.rs',
+            'src-tauri/src/models.rs'
+          )
+
+          $missing = $required | Where-Object { -not (Test-Path $_) }
+
+          if ($missing.Count -gt 0) {
+            Write-Host '::error::Missing required files. The checkout is incomplete.'
+            foreach ($f in $missing) { Write-Host "::error file=$f::missing: $f" }
+            Write-Host ''
+            Write-Host 'src-tauri contains:'
+            Get-ChildItem src-tauri | Select-Object Name | Format-Table -HideTableHeaders
+            exit 1
+          }
+
+          # build.rs must actually call tauri_build, not just exist.
+          if (-not (Select-String -Path 'src-tauri/build.rs' -Pattern 'tauri_build::build' -Quiet)) {
+            Write-Host '::error file=src-tauri/build.rs::build.rs does not call tauri_build::build()'
+            exit 1
+          }
+
+          # The three version fields must agree, or the installer and the UI disagree.
+          $pkg = (Get-Content package.json | ConvertFrom-Json).version
+          $conf = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $cargoMatch = Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "(.+)"' |
+            Select-Object -First 1
+          if (-not $cargoMatch) {
+            Write-Host '::error file=src-tauri/Cargo.toml::no [package] version found'
+            exit 1
+          }
+          $cargo = $cargoMatch.Matches[0].Groups[1].Value
+
+          Write-Host "versions -> package.json $pkg | tauri.conf.json $conf | Cargo.toml $cargo"
+          if ($pkg -ne $conf -or $pkg -ne $cargo) {
+            Write-Host '::error::Version mismatch between package.json, tauri.conf.json and Cargo.toml'
+            exit 1
+          }
+
+          Write-Host 'Project structure OK.'
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
