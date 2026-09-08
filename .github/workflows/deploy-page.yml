@@ -1,0 +1,48 @@
+name: Deploy Landing Page
+
+# GitHub Pages' branch-based publishing only offers the repository root or
+# /docs as a source folder. Publishing from page/ therefore goes through the
+# Pages Actions pipeline, which can take any directory as its artifact.
+#
+# One-time setup: Settings -> Pages -> Build and deployment -> Source:
+# "GitHub Actions".
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'page/**'
+      - '.github/workflows/deploy-page.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish rather than cancelling it mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload page/ as the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: page
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
